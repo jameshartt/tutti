@@ -24,6 +24,9 @@ public:
     explicit HttpServer(std::shared_ptr<RoomManager> room_manager);
     ~HttpServer();
 
+    /// Set the TLS certificate hash (base64-encoded SHA-256) for WebTransport
+    void set_cert_hash(const std::string& hash) { cert_hash_ = hash; }
+
     /// Start listening for HTTP connections
     bool listen(const std::string& address, uint16_t port);
 
@@ -60,6 +63,7 @@ private:
                                        const std::string& remote_ip);
 
     std::shared_ptr<RoomManager> room_manager_;
+    std::string cert_hash_;
     int server_fd_ = -1;
     std::thread accept_thread_;
     std::atomic<bool> running_{false};

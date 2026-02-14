@@ -1,28 +1,22 @@
 include(FetchContent)
 
-# ── msquic (QUIC transport) ──────────────────────────────────────────────────
-FetchContent_Declare(
-    msquic
-    GIT_REPOSITORY https://github.com/microsoft/msquic.git
-    GIT_TAG        v2.4.7
-    GIT_SHALLOW    TRUE
-    GIT_SUBMODULES_RECURSE TRUE
-)
-set(QUIC_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(QUIC_BUILD_TEST OFF CACHE BOOL "" FORCE)
-set(QUIC_BUILD_PERF OFF CACHE BOOL "" FORCE)
-set(QUIC_TLS "openssl" CACHE STRING "" FORCE)
-
-# ── libwtf (WebTransport over QUIC) ─────────────────────────────────────────
-# NOTE: libwtf is relatively immature. If integration proves problematic,
-# swap to lsquic v4.5.0 (accepts BoringSSL build complexity).
-# The transport abstraction in transport_interface.h enables this swap.
-FetchContent_Declare(
-    libwtf
-    GIT_REPOSITORY https://github.com/aspect-build/libwtf.git
-    GIT_TAG        main
-    GIT_SHALLOW    TRUE
-)
+# ── libwtf (WebTransport over HTTP/3 via msquic) ──────────────────────────────
+# libwtf bundles msquic as a subdirectory, so we don't fetch msquic separately
+# when WebTransport is enabled.
+if(TUTTI_ENABLE_WEBTRANSPORT)
+    FetchContent_Declare(
+        libwtf
+        GIT_REPOSITORY https://github.com/andrewmd5/libwtf.git
+        GIT_TAG        9d0a45532d7894ad47a11d6acf329c74decbab31
+        GIT_SHALLOW    FALSE
+        GIT_SUBMODULES_RECURSE TRUE
+    )
+    set(WTF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(WTF_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(WTF_ENABLE_LOGGING ON CACHE BOOL "" FORCE)
+    set(WTF_USE_EXTERNAL_MSQUIC OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(libwtf)
+endif()
 
 # ── rigtorp/SPSCQueue (lock-free SPSC queue) ────────────────────────────────
 FetchContent_Declare(

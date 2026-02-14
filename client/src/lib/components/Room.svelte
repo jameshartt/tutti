@@ -25,12 +25,15 @@
 	let capture: CaptureHandle | null = null;
 	let playback: PlaybackHandle | null = null;
 	let bridge: TransportBridge | null = null;
+	let activeTransport: import('../transport/transport.js').Transport | null = null;
 	let errorDetail = $state('');
 	let transportConnected = $state(false);
+	let participantId: string | null = null;
 
 	roomState.subscribe((s) => {
 		participants = s.participants;
 		vacateNotice = s.vacateNotice;
+		participantId = s.participantId;
 	});
 
 	audioState.subscribe((s) => {
@@ -53,31 +56,29 @@
 			capture = await startCapture();
 			playback = await startPlayback();
 
-			// Detect and create transport
-			const transportType = detectTransportType();
-			setTransportType(transportType);
-			transportDesc = getTransportDescription();
-
-			const transport = createTransport();
-
-			// Determine connection URL based on transport type
-			const wtUrl = `https://${window.location.hostname}:4433/wt`;
-			const wsUrl = `ws://${window.location.hostname}:8081`;
-			const connectUrl = transportType === 'webtransport' ? wtUrl : wsUrl;
-
-			// Attempt transport connection (non-fatal if it fails)
+			// Fetch transport config (cert hash for WebTransport with self-signed certs)
+			let certHash: string | undefined;
 			try {
-				await transport.connect(connectUrl);
+				const transportInfo = await fetch('/api/transport').then(r => r.json());
+				certHash = transportInfo.cert_hash;
+			} catch {
+				// Server may not have /api/transport — continue without cert hash
+			}
 
-				// Create and start bridge
-				bridge = new TransportBridge({
-					captureRingBufferSAB: capture.ringBufferSAB,
-					playbackRingBufferSAB: playback.ringBufferSAB,
-					transport
-				});
-				bridge.start();
+			// Determine URLs
+			const wtUrl = `https://${window.location.hostname}:4433/wt`;
+			const isDev = window.location.port === '3000';
+			const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			const wsUrl = isDev
+				? `${wsProtocol}//${window.location.host}/ws`
+				: `${wsProtocol}//${window.location.hostname}:8081`;
 
-				// Handle control messages
+			// Helper: wire up a transport, connect, bind, and start bridge
+			const wireTransport = async (
+				transport: import('../transport/transport.js').Transport,
+				url: string,
+				connectOptions?: { certHash?: string }
+			) => {
 				transport.onMessage((msg) => {
 					try {
 						const data = JSON.parse(msg);
@@ -86,10 +87,56 @@
 						// Invalid JSON
 					}
 				});
+
+				await transport.connect(url, connectOptions);
+
+				if (participantId) {
+					transport.sendReliable(
+						JSON.stringify({
+							type: 'bind',
+							participant_id: participantId,
+							room: roomName
+						})
+					);
+				}
+
+				bridge = new TransportBridge({
+					captureRingBufferSAB: capture!.ringBufferSAB,
+					playbackRingBufferSAB: playback!.ringBufferSAB,
+					transport
+				});
+				bridge.start();
+				activeTransport = transport;
 				transportConnected = true;
-			} catch (transportErr) {
-				console.warn('[Tutti] Transport not connected — audio capture is local only:', transportErr);
-				transportConnected = false;
+			};
+
+			// Try preferred transport, fall back if it fails
+			const preferredType = detectTransportType();
+			let connected = false;
+
+			if (preferredType === 'webtransport') {
+				try {
+					setTransportType('webtransport');
+					transportDesc = getTransportDescription();
+					const transport = createTransport();
+					await wireTransport(transport, wtUrl, { certHash });
+					connected = true;
+				} catch (wtErr) {
+					console.warn('[Tutti] WebTransport failed, falling back to WebRTC:', wtErr);
+				}
+			}
+
+			if (!connected) {
+				try {
+					setTransportType('webrtc');
+					transportDesc = 'WebRTC DataChannel' + (preferredType === 'webtransport' ? ' (fallback)' : '');
+					const { WebRTCTransport } = await import('../transport/webrtc.js');
+					const rtcTransport = new WebRTCTransport();
+					await wireTransport(rtcTransport, wsUrl);
+				} catch (rtcErr) {
+					console.warn('[Tutti] Transport not connected — audio capture is local only:', rtcErr);
+					transportConnected = false;
+				}
 			}
 
 			setPipelineState('active');
@@ -142,43 +189,46 @@
 		}
 	}
 
-	function handleGainChange(participantId: string, gain: number) {
+	function handleGainChange(pid: string, gain: number) {
 		roomState.update((s) => ({
 			...s,
 			participants: s.participants.map((p) =>
-				p.id === participantId ? { ...p, gain } : p
+				p.id === pid ? { ...p, gain } : p
 			)
 		}));
-		// Send to server
-		bridge?.transport?.sendReliable?.(
-			JSON.stringify({ type: 'gain', participant_id: participantId, value: gain })
+		activeTransport?.sendReliable(
+			JSON.stringify({ type: 'gain', participant_id: pid, value: gain })
 		);
 	}
 
-	function handleMuteToggle(participantId: string, muted: boolean) {
+	function handleMuteToggle(pid: string, muted: boolean) {
 		roomState.update((s) => ({
 			...s,
 			participants: s.participants.map((p) =>
-				p.id === participantId ? { ...p, muted } : p
+				p.id === pid ? { ...p, muted } : p
 			)
 		}));
-		bridge?.transport?.sendReliable?.(
-			JSON.stringify({ type: 'mute', participant_id: participantId, muted })
+		activeTransport?.sendReliable(
+			JSON.stringify({ type: 'mute', participant_id: pid, muted })
 		);
 	}
 
 	async function handleLeave() {
 		bridge?.stop();
+		activeTransport?.disconnect();
 		capture?.stop();
 		playback?.stop();
+		activeTransport = null;
 		await closeAudioContext();
 		await leaveRoom();
 	}
 
 	onDestroy(() => {
 		bridge?.stop();
+		activeTransport?.disconnect();
 		capture?.stop();
 		playback?.stop();
+		activeTransport = null;
 	});
 </script>
 

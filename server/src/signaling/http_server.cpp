@@ -137,6 +137,16 @@ HttpServer::HttpResponse HttpServer::route(const HttpRequest& req) {
         return handle_list_rooms();
     }
 
+    if (req.method == "GET" && req.path == "/api/transport") {
+        nlohmann::json resp;
+        resp["wt_url"] = "https://localhost:4433/wt";
+        resp["ws_url"] = "ws://localhost:8081";
+        if (!cert_hash_.empty()) {
+            resp["cert_hash"] = cert_hash_;
+        }
+        return {200, "application/json", resp.dump()};
+    }
+
     // Extract room name from path: /api/rooms/:name/action
     if (req.path.substr(0, 11) == "/api/rooms/") {
         auto rest = req.path.substr(11);

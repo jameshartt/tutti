@@ -40,6 +40,10 @@ public:
                         const std::string& alias,
                         std::shared_ptr<TransportSession> session);
 
+    /// Attach a transport session to an existing participant (called after bind)
+    bool attach_session(const std::string& id,
+                        std::shared_ptr<TransportSession> session);
+
     /// Remove a participant from the room
     void remove_participant(const std::string& id);
 

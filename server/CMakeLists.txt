@@ -19,6 +19,8 @@ add_library(tutti-core STATIC
     src/transport/wt_transport.h
     src/transport/rtc_transport.cpp
     src/transport/rtc_transport.h
+    src/transport/session_binder.cpp
+    src/transport/session_binder.h
     src/audio/mixer.cpp
     src/audio/mixer.h
     src/audio/room.cpp
@@ -45,6 +47,12 @@ target_link_libraries(tutti-core PUBLIC
     LibDataChannel::LibDataChannel
     pthread
 )
+
+# ── WebTransport support (optional) ─────────────────────────────────────────
+if(TUTTI_ENABLE_WEBTRANSPORT)
+    target_compile_definitions(tutti-core PUBLIC TUTTI_WEBTRANSPORT)
+    target_link_libraries(tutti-core PUBLIC wtf)
+endif()
 
 # ── Main executable ─────────────────────────────────────────────────────────
 add_executable(tutti-server src/main.cpp)

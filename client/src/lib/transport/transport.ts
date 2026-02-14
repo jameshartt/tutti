@@ -18,7 +18,7 @@ export interface Transport {
 	readonly state: TransportState;
 
 	/** Connect to the server */
-	connect(url: string): Promise<void>;
+	connect(url: string, options?: { certHash?: string }): Promise<void>;
 
 	/** Disconnect from the server */
 	disconnect(): void;

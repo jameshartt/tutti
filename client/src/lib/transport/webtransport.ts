@@ -17,6 +17,7 @@ import type {
 export class WebTransportTransport implements Transport {
 	private wt: WebTransport | null = null;
 	private controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+	private datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 	private datagramCallbacks: DatagramCallback[] = [];
 	private messageCallbacks: MessageCallback[] = [];
 	private stateCallbacks: StateCallback[] = [];
@@ -26,13 +27,24 @@ export class WebTransportTransport implements Transport {
 		return this._state;
 	}
 
-	async connect(url: string): Promise<void> {
+	async connect(url: string, options?: { certHash?: string }): Promise<void> {
 		this.setState('connecting');
 
 		try {
-			this.wt = new WebTransport(url);
+			const wtOptions: WebTransportOptions = {};
+			if (options?.certHash) {
+				const binary = Uint8Array.from(atob(options.certHash), c => c.charCodeAt(0));
+				wtOptions.serverCertificateHashes = [{
+					algorithm: 'sha-256',
+					value: binary.buffer
+				}];
+			}
+			this.wt = new WebTransport(url, wtOptions);
 			await this.wt.ready;
 			this.setState('connected');
+
+			// Acquire datagram writer (cached for lifetime of connection)
+			this.datagramWriter = this.wt.datagrams.writable.getWriter();
 
 			// Start reading datagrams
 			this.readDatagrams();
@@ -53,19 +65,21 @@ export class WebTransportTransport implements Transport {
 	}
 
 	disconnect(): void {
+		this.datagramWriter?.releaseLock();
+		this.datagramWriter = null;
+		this.controlWriter = null;
 		if (this.wt) {
 			this.wt.close();
 			this.wt = null;
 		}
-		this.controlWriter = null;
 		this.setState('disconnected');
 	}
 
 	sendDatagram(data: Uint8Array): void {
-		if (!this.wt || this._state !== 'connected') return;
-		// Datagrams are fire-and-forget (unreliable)
-		const writer = this.wt.datagrams.writable.getWriter();
-		writer.write(data).finally(() => writer.releaseLock());
+		if (!this.datagramWriter || this._state !== 'connected') return;
+		this.datagramWriter.write(data).catch(() => {
+			// Connection closed
+		});
 	}
 
 	sendReliable(message: string): void {

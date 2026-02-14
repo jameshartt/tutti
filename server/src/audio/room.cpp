@@ -73,6 +73,31 @@ bool Room::add_participant(const std::string& id,
     return true;
 }
 
+bool Room::attach_session(const std::string& id,
+                           std::shared_ptr<TransportSession> session) {
+    std::lock_guard<std::mutex> lock(participants_mutex_);
+    auto it = participants_.find(id);
+    if (it == participants_.end()) return false;
+
+    it->second.session = std::move(session);
+
+    // Send room state to the newly-bound participant
+    if (it->second.session) {
+        nlohmann::json state_msg;
+        state_msg["type"] = "room_state";
+        state_msg["participants"] = nlohmann::json::array();
+        for (auto& [pid, p] : participants_) {
+            state_msg["participants"].push_back({
+                {"id", pid},
+                {"name", p.alias}
+            });
+        }
+        it->second.session->send_reliable(state_msg.dump());
+    }
+
+    return true;
+}
+
 void Room::remove_participant(const std::string& id) {
     std::lock_guard<std::mutex> lock(participants_mutex_);
     participants_.erase(id);
