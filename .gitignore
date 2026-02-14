@@ -1,0 +1,18 @@
+# Server build
+server/build/
+
+# Client
+client/node_modules/
+client/.svelte-kit/
+client/build/
+client/package-lock.json
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
