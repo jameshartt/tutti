@@ -43,6 +43,12 @@ export class WebTransportTransport implements Transport {
 			await this.wt.ready;
 			this.setState('connected');
 
+			// Minimise internal Streams API buffering for real-time audio.
+			// Default high-water marks cause the browser to batch datagrams
+			// internally before surfacing them, adding 100-200ms of latency.
+			this.wt.datagrams.incomingHighWaterMark = 1;
+			this.wt.datagrams.outgoingHighWaterMark = 1;
+
 			// Acquire datagram writer (cached for lifetime of connection)
 			this.datagramWriter = this.wt.datagrams.writable.getWriter();
 
