@@ -351,8 +351,8 @@
 		{#if nerdMode}
 			<LatencyDisplay latency={currentLatencyInfo} breakdown={currentBreakdown} />
 			<AudioDiagnostics {transportDesc} {transportConnected} />
-			{#if capture && playback}
-				<LatencyTester capturePort={capture.capturePort} playbackPort={playback.playbackPort} />
+			{#if capture && playback && bridge}
+				<LatencyTester capturePort={capture.capturePort} playbackPort={playback.playbackPort} setLoopback={(enabled) => bridge?.setLoopback(enabled)} />
 			{/if}
 		{/if}
 	{/if}

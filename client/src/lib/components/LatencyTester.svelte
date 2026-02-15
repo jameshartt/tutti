@@ -3,8 +3,9 @@
 
 	let {
 		capturePort,
-		playbackPort
-	}: { capturePort: MessagePort; playbackPort: MessagePort } = $props();
+		playbackPort,
+		setLoopback
+	}: { capturePort: MessagePort; playbackPort: MessagePort; setLoopback: (enabled: boolean) => void } = $props();
 
 	let running = $state(false);
 	let results: LoopbackResult[] = $state([]);
@@ -14,7 +15,7 @@
 		running = true;
 		error = '';
 		try {
-			const result = await runLoopbackTest(capturePort, playbackPort);
+			const result = await runLoopbackTest(capturePort, playbackPort, setLoopback);
 			results = [result, ...results.slice(0, 4)];
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Test failed';

@@ -2,9 +2,11 @@
  * Loopback latency test.
  *
  * Injects a distinctive 3-pulse test signal into the capture worklet,
- * then listens for its arrival in the playback worklet. The time delta
- * gives the true round-trip latency through the full pipeline:
- *   mic worklet → ring buffer → transport → server → transport → ring buffer → playback worklet
+ * then listens for its arrival in the playback worklet. Uses a local
+ * loopback in the TransportBridge (capture → bridge → playback) since
+ * the server never echoes audio back to the sender. The time delta
+ * gives the client-side pipeline round-trip latency:
+ *   capture worklet → ring buffer → bridge loopback → ring buffer → playback worklet
  */
 
 const TEST_TIMEOUT_MS = 5000;
@@ -16,7 +18,8 @@ export interface LoopbackResult {
 
 export function runLoopbackTest(
 	capturePort: MessagePort,
-	playbackPort: MessagePort
+	playbackPort: MessagePort,
+	setLoopback: (enabled: boolean) => void
 ): Promise<LoopbackResult> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
@@ -53,9 +56,13 @@ export function runLoopbackTest(
 
 		function cleanup() {
 			clearTimeout(timeout);
+			setLoopback(false);
 			playbackPort.onmessage = originalHandler;
 			playbackPort.postMessage({ type: 'stop-detect-test' });
 		}
+
+		// Enable local loopback in the transport bridge
+		setLoopback(true);
 
 		// Arm the playback detector
 		playbackPort.onmessage = onPlaybackMessage;

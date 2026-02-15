@@ -42,6 +42,7 @@ export class TransportBridge {
 	private sendSequence = 0;
 	private sendTimestamp = 0;
 	private incomingCount = 0;
+	private loopbackEnabled = false;
 
 	// Pre-allocated buffers for zero-allocation on hot path
 	private readBuffer = new Int16Array(SAMPLES_PER_FRAME);
@@ -90,6 +91,11 @@ export class TransportBridge {
 		}
 	}
 
+	/** Enable/disable local loopback (for pipeline latency testing) */
+	setLoopback(enabled: boolean): void {
+		this.loopbackEnabled = enabled;
+	}
+
 	/** Get transport packet counters for diagnostics */
 	getStats(): { packetsSent: number; packetsReceived: number } {
 		return {
@@ -115,6 +121,13 @@ export class TransportBridge {
 			// required because datagramWriter.write() is async and may
 			// hold the reference until the QUIC stack copies the data.
 			this.transport.sendDatagram(serializePacket(packet));
+
+			// Local loopback: write captured frame back to playback buffer
+			// so the pipeline latency test can detect it without needing
+			// the server to echo audio back to the sender.
+			if (this.loopbackEnabled) {
+				this.playbackWriter.write(this.readBuffer);
+			}
 		}
 	}
 

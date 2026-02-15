@@ -122,15 +122,16 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 			this.partialFrameCount++;
 		}
 
-		const firstChunk = Math.min(toRead, this.capacity - read);
+		const readPos = Atomics.load(this.pointers, 1);
+		const firstChunk = Math.min(toRead, this.capacity - readPos);
 
 		// Read Int16 samples
-		this.tempBuffer.set(this.data.subarray(read, read + firstChunk));
+		this.tempBuffer.set(this.data.subarray(readPos, readPos + firstChunk));
 		if (toRead > firstChunk) {
 			this.tempBuffer.set(this.data.subarray(0, toRead - firstChunk), firstChunk);
 		}
 
-		Atomics.store(this.pointers, 1, (read + toRead) % this.capacity);
+		Atomics.store(this.pointers, 1, (readPos + toRead) % this.capacity);
 
 		// Convert Int16 [-32768, 32767] to Float32 [-1, 1]
 		const scale = 1.0 / 32768.0;
