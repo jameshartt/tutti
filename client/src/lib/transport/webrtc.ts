@@ -40,72 +40,78 @@ export class WebRTCTransport implements Transport {
 			// Connect to signaling server
 			await this.connectSignaling(url);
 
-			// Create peer connection
-			this.pc = new RTCPeerConnection({
-				iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+			// Promise that resolves when both DataChannels are open
+			const channelsOpen = new Promise<void>((resolve, reject) => {
+				const checkBothOpen = () => {
+					if (
+						this.audioDC?.readyState === 'open' &&
+						this.controlDC?.readyState === 'open'
+					) {
+						this.setState('connected');
+						resolve();
+					}
+				};
+
+				// Create peer connection
+				this.pc = new RTCPeerConnection({
+					iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+				});
+
+				// Create audio data channel (unreliable, unordered)
+				this.audioDC = this.pc.createDataChannel('audio', {
+					ordered: false,
+					maxRetransmits: 0
+				});
+				this.audioDC.binaryType = 'arraybuffer';
+
+				this.audioDC.onopen = checkBothOpen;
+
+				this.audioDC.onmessage = (event) => {
+					const data = new Uint8Array(event.data);
+					for (const cb of this.datagramCallbacks) {
+						cb(data);
+					}
+				};
+
+				// Create control data channel (reliable, ordered)
+				this.controlDC = this.pc.createDataChannel('control');
+
+				this.controlDC.onopen = checkBothOpen;
+
+				this.controlDC.onmessage = (event) => {
+					for (const cb of this.messageCallbacks) {
+						cb(event.data);
+					}
+				};
+
+				// Handle ICE candidates
+				this.pc.onicecandidate = (event) => {
+					if (event.candidate && this.signalingWs) {
+						this.signalingWs.send(
+							JSON.stringify({
+								type: 'ice_candidate',
+								candidate: event.candidate.candidate,
+								mid: event.candidate.sdpMid
+							})
+						);
+					}
+				};
+
+				this.pc.onconnectionstatechange = () => {
+					if (!this.pc) return;
+					const pcState = this.pc.connectionState;
+					if (pcState === 'disconnected' || pcState === 'closed') {
+						this.setState('disconnected');
+					} else if (pcState === 'failed') {
+						this.setState('failed');
+						reject(new Error('WebRTC peer connection failed'));
+					}
+				};
 			});
 
-			// Create audio data channel (unreliable, unordered)
-			this.audioDC = this.pc.createDataChannel('audio', {
-				ordered: false,
-				maxRetransmits: 0
-			});
-			this.audioDC.binaryType = 'arraybuffer';
-
-			this.audioDC.onopen = () => {
-				if (this.controlDC?.readyState === 'open') {
-					this.setState('connected');
-				}
-			};
-
-			this.audioDC.onmessage = (event) => {
-				const data = new Uint8Array(event.data);
-				for (const cb of this.datagramCallbacks) {
-					cb(data);
-				}
-			};
-
-			// Create control data channel (reliable, ordered)
-			this.controlDC = this.pc.createDataChannel('control');
-
-			this.controlDC.onopen = () => {
-				if (this.audioDC?.readyState === 'open') {
-					this.setState('connected');
-				}
-			};
-
-			this.controlDC.onmessage = (event) => {
-				for (const cb of this.messageCallbacks) {
-					cb(event.data);
-				}
-			};
-
-			// Handle ICE candidates
-			this.pc.onicecandidate = (event) => {
-				if (event.candidate && this.signalingWs) {
-					this.signalingWs.send(
-						JSON.stringify({
-							type: 'ice_candidate',
-							candidate: event.candidate.candidate,
-							mid: event.candidate.sdpMid
-						})
-					);
-				}
-			};
-
-			this.pc.onconnectionstatechange = () => {
-				if (!this.pc) return;
-				const pcState = this.pc.connectionState;
-				if (pcState === 'disconnected' || pcState === 'closed') {
-					this.setState('disconnected');
-				} else if (pcState === 'failed') {
-					this.setState('failed');
-				}
-			};
-
-			// Create and send offer
-			const offer = await this.pc.createOffer();
-			await this.pc.setLocalDescription(offer);
+			// Create and send offer (pc is set synchronously above)
+			const offer = await this.pc!.createOffer();
+			await this.pc!.setLocalDescription(offer);
 
 			this.signalingWs!.send(
 				JSON.stringify({
@@ -113,6 +119,9 @@ export class WebRTCTransport implements Transport {
 					sdp: offer.sdp
 				})
 			);
+
+			// Wait for both DataChannels to open before resolving
+			await channelsOpen;
 		} catch {
 			this.setState('failed');
 			throw new Error('WebRTC connection failed');
