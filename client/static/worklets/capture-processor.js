@@ -60,6 +60,9 @@ class CaptureProcessor extends AudioWorkletProcessor {
 
 		Atomics.store(this._pointers, 0, (write + toWrite) % this._capacity);
 
+		// Notify main thread that a frame is available for sending
+		this.port.postMessage({ type: 'frame-ready' });
+
 		return true;
 	}
 }

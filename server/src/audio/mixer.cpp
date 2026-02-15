@@ -13,12 +13,13 @@ Mixer::Mixer(size_t max_participants)
     input_frames_.resize(max_participants);
     active_ids_.reserve(max_participants);
     has_input_.resize(max_participants, false);
+    active_states_.reserve(max_participants);
 }
 
 void Mixer::add_participant(const std::string& id) {
     std::lock_guard<std::mutex> lock(participants_mutex_);
     if (participants_.size() >= max_participants_) return;
-    participants_[id] = std::make_unique<ParticipantMixState>(id);
+    participants_[id] = std::make_shared<ParticipantMixState>(id);
 }
 
 void Mixer::remove_participant(const std::string& id) {
@@ -63,29 +64,27 @@ bool Mixer::pop_output(const std::string& participant_id,
 }
 
 void Mixer::mix_cycle() {
-    // Snapshot participant IDs (lock briefly)
+    // Snapshot participant IDs and shared_ptrs — single lock acquisition
     active_ids_.clear();
+    active_states_.clear();
     {
         std::lock_guard<std::mutex> lock(participants_mutex_);
         for (auto& [id, state] : participants_) {
             active_ids_.push_back(id);
+            active_states_.push_back(state);
         }
     }
 
     const size_t n = active_ids_.size();
     if (n == 0) return;
 
-    // Read one frame from each participant's input queue
+    // Pop one frame per participant per cycle (SPSC queues are lock-free)
     for (size_t i = 0; i < n; ++i) {
         has_input_[i] = false;
-        std::lock_guard<std::mutex> lock(participants_mutex_);
-        auto it = participants_.find(active_ids_[i]);
-        if (it != participants_.end()) {
-            AudioFrame frame;
-            if (it->second->input_queue.try_pop(frame)) {
-                input_frames_[i] = frame.samples;
-                has_input_[i] = true;
-            }
+        AudioFrame frame;
+        if (active_states_[i]->input_queue.try_pop(frame)) {
+            input_frames_[i] = frame.samples;
+            has_input_[i] = true;
         }
     }
 
@@ -147,12 +146,8 @@ void Mixer::mix_cycle() {
                            static_cast<int32_t>(std::numeric_limits<int16_t>::max())));
         }
 
-        // Push to listener's output queue
-        std::lock_guard<std::mutex> lock(participants_mutex_);
-        auto it = participants_.find(listener_id);
-        if (it != participants_.end()) {
-            it->second->output_queue.try_push(std::move(output));
-        }
+        // Push to listener's output queue — no lock needed, SPSC is thread-safe
+        active_states_[listener_idx]->output_queue.try_push(std::move(output));
     }
 }
 

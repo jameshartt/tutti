@@ -10,6 +10,10 @@
  */
 
 const SAMPLES_PER_FRAME = 128;
+// Prebuffer: accumulate this many frames before starting playback.
+// Prevents phase-locked underruns where the read/write cadence aligns
+// such that every other quantum finds an empty buffer.
+const PREBUFFER_FRAMES = 2; // ~5ms at 48kHz
 
 class PlaybackProcessor extends AudioWorkletProcessor {
 	constructor() {
@@ -17,6 +21,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		this._pointers = null;
 		this._data = null;
 		this._capacity = 0;
+		this._prebuffering = true;
 		this._tempBuffer = new Int16Array(SAMPLES_PER_FRAME);
 
 		this.port.onmessage = (event) => {
@@ -25,6 +30,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this._pointers = new Int32Array(sab, 0, 2);
 				this._data = new Int16Array(sab, 8);
 				this._capacity = this._data.length;
+				this._prebuffering = true;
 			}
 		};
 	}
@@ -41,6 +47,16 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		const write = Atomics.load(this._pointers, 0);
 		const read = Atomics.load(this._pointers, 1);
 		const available = (write - read + this._capacity) % this._capacity;
+
+		// Prebuffer: wait until enough data accumulates before starting
+		// playback, so we have a cushion against timing jitter.
+		if (this._prebuffering) {
+			if (available < SAMPLES_PER_FRAME * PREBUFFER_FRAMES) {
+				outChannel.fill(0);
+				return true;
+			}
+			this._prebuffering = false;
+		}
 
 		const toRead = Math.min(outChannel.length, available);
 

@@ -37,8 +37,8 @@ struct AudioFrame {
 /// Producer: network receive thread. Consumer: mixer RT thread (or vice versa).
 class AudioRingBuffer {
 public:
-    /// Capacity in frames. Default ~100ms of buffer at 48kHz/128 samples.
-    explicit AudioRingBuffer(size_t capacity = 64)
+    /// Capacity in frames. Default ~21ms of buffer at 48kHz/128 samples.
+    explicit AudioRingBuffer(size_t capacity = 8)
         : queue_(capacity) {}
 
     /// Non-blocking push. Returns false if full (drop frame).

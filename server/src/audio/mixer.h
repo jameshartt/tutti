@@ -15,7 +15,8 @@ namespace tutti {
 
 /// Per-participant mix state.
 /// Not copyable/movable because AudioRingBuffer wraps rigtorp::SPSCQueue.
-/// Stored via unique_ptr in the mixer's participant map.
+/// Stored via shared_ptr so the mixer thread can snapshot pointers without
+/// holding the participants mutex during queue operations.
 struct ParticipantMixState {
     std::string id;
     float gain = 1.0f;           // 0.0 - 1.0
@@ -85,8 +86,8 @@ private:
     size_t max_participants_;
 
     // Participant state indexed by ID
-    // Protected by mutex for add/remove, but read lock-free during mix
-    std::unordered_map<std::string, std::unique_ptr<ParticipantMixState>> participants_;
+    // Protected by mutex for add/remove; mixer thread snapshots shared_ptrs
+    std::unordered_map<std::string, std::shared_ptr<ParticipantMixState>> participants_;
     mutable std::mutex participants_mutex_;
 
     // Per-listener gain map: gains_[listener_id][source_id]
@@ -98,6 +99,7 @@ private:
     std::vector<std::array<int16_t, kSamplesPerFrame>> input_frames_;
     std::vector<std::string> active_ids_;
     std::vector<bool> has_input_;
+    std::vector<std::shared_ptr<ParticipantMixState>> active_states_;
 };
 
 } // namespace tutti

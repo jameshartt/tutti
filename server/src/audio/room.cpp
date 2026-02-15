@@ -8,6 +8,7 @@
 #ifdef __linux__
 #include <pthread.h>
 #include <sched.h>
+#include <time.h>
 #endif
 
 namespace tutti {
@@ -198,35 +199,51 @@ void Room::mixer_thread_func() {
     constexpr auto mix_interval =
         std::chrono::microseconds(1000000 * kSamplesPerFrame / kSampleRate);
 
-    while (running_) {
-        auto start = std::chrono::steady_clock::now();
+    auto next_tick = std::chrono::steady_clock::now() + mix_interval;
 
+    while (running_) {
         mixer_.mix_cycle();
         send_outputs();
 
-        // Sleep for remainder of mix interval
-        auto elapsed = std::chrono::steady_clock::now() - start;
-        auto remaining = mix_interval - elapsed;
-        if (remaining > std::chrono::microseconds(0)) {
-            std::this_thread::sleep_for(remaining);
-        }
+#ifdef __linux__
+        // High-resolution absolute-time sleep (~50μs precision vs 1-4ms for sleep_for)
+        auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            next_tick.time_since_epoch()).count();
+        struct timespec ts;
+        ts.tv_sec = ns / 1000000000;
+        ts.tv_nsec = ns % 1000000000;
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
+#else
+        std::this_thread::sleep_until(next_tick);
+#endif
+
+        next_tick += mix_interval;
     }
 }
 
 void Room::send_outputs() {
-    std::lock_guard<std::mutex> lock(participants_mutex_);
-    for (auto& [id, participant] : participants_) {
-        AudioFrame frame;
-        if (mixer_.pop_output(id, frame)) {
-            // Set output sequence number
-            frame.sequence = participant.output_sequence++;
-
-            auto pkt = frame.to_packet();
-            uint8_t buf[kAudioPacketSize];
-            pkt.serialize(buf);
-            if (participant.session)
-                participant.session->send_datagram(buf, kAudioPacketSize);
+    // Collect outputs under lock, then send outside to avoid holding
+    // the mutex during network I/O (which contends with receive thread)
+    pending_sends_.clear();
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        for (auto& [id, participant] : participants_) {
+            AudioFrame frame;
+            if (mixer_.pop_output(id, frame)) {
+                frame.sequence = participant.output_sequence++;
+                PendingSend ps;
+                ps.session = participant.session;
+                auto pkt = frame.to_packet();
+                pkt.serialize(ps.buf);
+                pending_sends_.push_back(std::move(ps));
+            }
         }
+    }
+
+    // Send outside the lock
+    for (auto& ps : pending_sends_) {
+        if (ps.session)
+            ps.session->send_datagram(ps.buf, kAudioPacketSize);
     }
 }
 

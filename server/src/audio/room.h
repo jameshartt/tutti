@@ -109,6 +109,13 @@ private:
     std::string password_;
     mutable std::mutex password_mutex_;
 
+    // Pre-allocated buffer for send_outputs() to avoid RT allocation
+    struct PendingSend {
+        std::shared_ptr<TransportSession> session;
+        uint8_t buf[kAudioPacketSize];
+    };
+    std::vector<PendingSend> pending_sends_;
+
     // RT mixer thread
     std::thread mixer_thread_;
     std::atomic<bool> running_{false};

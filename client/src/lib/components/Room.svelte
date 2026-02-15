@@ -103,7 +103,8 @@
 				bridge = new TransportBridge({
 					captureRingBufferSAB: capture!.ringBufferSAB,
 					playbackRingBufferSAB: playback!.ringBufferSAB,
-					transport
+					transport,
+					capturePort: capture!.capturePort
 				});
 				bridge.start();
 				activeTransport = transport;

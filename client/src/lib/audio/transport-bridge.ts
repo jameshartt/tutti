@@ -28,12 +28,15 @@ export interface TransportBridgeOptions {
 	playbackRingBufferSAB: SharedArrayBuffer;
 	/** Network transport (WebTransport or WebRTC) */
 	transport: Transport;
+	/** MessagePort from capture worklet for frame-ready notifications */
+	capturePort?: MessagePort;
 }
 
 export class TransportBridge {
 	private captureReader: RingBufferReader;
 	private playbackWriter: RingBufferWriter;
 	private transport: Transport;
+	private capturePort: MessagePort | null;
 	private running = false;
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
 	private sendSequence = 0;
@@ -46,6 +49,7 @@ export class TransportBridge {
 		this.captureReader = new RingBufferReader(options.captureRingBufferSAB);
 		this.playbackWriter = new RingBufferWriter(options.playbackRingBufferSAB);
 		this.transport = options.transport;
+		this.capturePort = options.capturePort ?? null;
 	}
 
 	/** Start the bridge: begin polling capture buffer and listening for incoming data */
@@ -58,17 +62,27 @@ export class TransportBridge {
 			this.handleIncoming(data);
 		});
 
-		// Poll capture ring buffer at ~2.67ms intervals (matching audio quantum)
-		// Using setInterval is imprecise but sufficient for main thread polling.
-		// The real timing is governed by the AudioWorklet's render quantum.
-		this.pollTimer = setInterval(() => {
-			this.drainCapture();
-		}, 2);
+		if (this.capturePort) {
+			// Event-driven: capture worklet notifies us when a frame is written
+			this.capturePort.onmessage = (event) => {
+				if (event.data?.type === 'frame-ready') {
+					this.drainCapture();
+				}
+			};
+		} else {
+			// Fallback: poll capture ring buffer at ~2.67ms intervals
+			this.pollTimer = setInterval(() => {
+				this.drainCapture();
+			}, 2);
+		}
 	}
 
 	/** Stop the bridge */
 	stop(): void {
 		this.running = false;
+		if (this.capturePort) {
+			this.capturePort.onmessage = null;
+		}
 		if (this.pollTimer) {
 			clearInterval(this.pollTimer);
 			this.pollTimer = null;
@@ -77,7 +91,6 @@ export class TransportBridge {
 
 	/** Read from capture ring buffer, packetize, and send */
 	private drainCapture(): void {
-		// Read one frame at a time
 		while (this.captureReader.availableRead() >= SAMPLES_PER_FRAME) {
 			const read = this.captureReader.read(this.readBuffer);
 			if (read < SAMPLES_PER_FRAME) break;
@@ -89,8 +102,10 @@ export class TransportBridge {
 			};
 			this.sendTimestamp += SAMPLES_PER_FRAME;
 
-			const data = serializePacket(packet);
-			this.transport.sendDatagram(data);
+			// serializePacket returns a fresh Uint8Array each call —
+			// required because datagramWriter.write() is async and may
+			// hold the reference until the QUIC stack copies the data.
+			this.transport.sendDatagram(serializePacket(packet));
 		}
 	}
 

@@ -10,12 +10,14 @@ import { getAudioContext, getMicrophoneStream } from './context.js';
 import { createRingBufferSAB } from './ring-buffer.js';
 import { SAMPLES_PER_FRAME } from './types.js';
 
-// Ring buffer capacity: ~100ms of audio at 48kHz
-const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 64; // 8192 samples ≈ 170ms
+// Ring buffer capacity: ~21ms of audio at 48kHz (8 frames)
+const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 8; // 1024 samples ≈ 21ms
 
 export interface CaptureHandle {
 	/** SharedArrayBuffer containing captured audio (Int16 PCM) */
 	ringBufferSAB: SharedArrayBuffer;
+	/** MessagePort for receiving frame-ready notifications from the capture worklet */
+	capturePort: MessagePort;
 	/** Stop capture and release resources */
 	stop: () => void;
 }
@@ -56,6 +58,7 @@ export async function startCapture(): Promise<CaptureHandle> {
 
 	return {
 		ringBufferSAB,
+		capturePort: workletNode.port,
 		stop() {
 			source.disconnect();
 			workletNode.disconnect();
