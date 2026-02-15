@@ -67,9 +67,25 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				return true;
 			}
 			this._prebuffering = false;
+
+			// Skip-ahead: during startup, data may have accumulated while
+			// waiting for the first process() call. Advance the read pointer
+			// to keep only 1 frame of cushion, discarding stale samples that
+			// would otherwise add permanent buffer latency.
+			const targetFill = SAMPLES_PER_FRAME;
+			if (available > targetFill) {
+				const skip = available - targetFill;
+				Atomics.store(this._pointers, 1, (read + skip) % this._capacity);
+				// Update local state to reflect the skip
+				this._currentFillLevel = targetFill;
+			}
 		}
 
-		const toRead = Math.min(outChannel.length, available);
+		// Re-read after potential skip-ahead
+		const currentWrite = Atomics.load(this._pointers, 0);
+		const currentRead = Atomics.load(this._pointers, 1);
+		const currentAvailable = (currentWrite - currentRead + this._capacity) % this._capacity;
+		const toRead = Math.min(outChannel.length, currentAvailable);
 
 		if (toRead === 0) {
 			this._underrunCount++;

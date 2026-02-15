@@ -11,6 +11,8 @@ import { createRingBufferSAB } from './ring-buffer.js';
 import { SAMPLES_PER_FRAME } from './types.js';
 
 // Ring buffer capacity: ~21ms of audio at 48kHz (8 frames)
+// Capacity controls jitter tolerance, not latency — the playback worklet's
+// skip-ahead on prebuffer exit prevents accumulation from adding delay.
 const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 8; // 1024 samples ≈ 21ms
 
 export interface PlaybackHandle {
