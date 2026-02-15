@@ -1,14 +1,19 @@
 #include "room.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 
 #ifdef __linux__
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/eventfd.h>
 #include <time.h>
+#include <unistd.h>
 #endif
 
 namespace tutti {
@@ -16,9 +21,21 @@ namespace tutti {
 Room::Room(const std::string& name, size_t max_participants)
     : name_(name),
       max_participants_(max_participants),
-      mixer_(max_participants) {}
+      mixer_(max_participants) {
+#ifdef __linux__
+    notify_fd_ = eventfd(0, EFD_NONBLOCK);
+    if (notify_fd_ < 0) {
+        std::cerr << "[Room:" << name_ << "] Warning: Could not create eventfd\n";
+    }
+#endif
+}
 
-Room::~Room() { stop(); }
+Room::~Room() {
+    stop();
+#ifdef __linux__
+    if (notify_fd_ >= 0) ::close(notify_fd_);
+#endif
+}
 
 void Room::start() {
     if (running_) return;
@@ -124,9 +141,73 @@ void Room::on_audio_received(const std::string& participant_id,
                               const uint8_t* data, size_t len) {
     if (len < kAudioPacketSize) return;
 
+    // Fast path: 2 participants → direct forwarding (bypass mixer)
+    std::shared_ptr<TransportSession> target_session;
+    std::string target_id;
+    uint32_t output_seq = 0;
+    bool use_fast_path = false;
+    size_t count = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        count = participants_.size();
+        if (count == 2) {
+            for (auto& [pid, p] : participants_) {
+                if (pid != participant_id) {
+                    target_id = pid;
+                    target_session = p.session;
+                    output_seq = p.output_sequence++;
+                    use_fast_path = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (use_fast_path) {
+        GainEntry ge = mixer_.get_gain_entry(target_id, participant_id);
+
+        if (ge.muted || ge.gain <= 0.0f) return;
+
+        if (ge.gain == 1.0f) {
+            // Near-zero-copy: memcpy + overwrite sequence number
+            uint8_t buf[kAudioPacketSize];
+            std::memcpy(buf, data, kAudioPacketSize);
+            std::memcpy(buf, &output_seq, sizeof(output_seq));
+            if (target_session)
+                target_session->send_datagram(buf, kAudioPacketSize);
+        } else {
+            // Apply gain, re-serialize
+            auto pkt = AudioPacket::deserialize(data, len);
+            for (size_t s = 0; s < kSamplesPerFrame; ++s) {
+                pkt.samples[s] = static_cast<int16_t>(
+                    std::clamp(
+                        static_cast<int32_t>(std::lround(pkt.samples[s] * ge.gain)),
+                        static_cast<int32_t>(std::numeric_limits<int16_t>::min()),
+                        static_cast<int32_t>(std::numeric_limits<int16_t>::max())));
+            }
+            pkt.sequence = output_seq;
+            uint8_t buf[kAudioPacketSize];
+            pkt.serialize(buf);
+            if (target_session)
+                target_session->send_datagram(buf, kAudioPacketSize);
+        }
+        return;
+    }
+
+    // 3+ participant path: push to mixer
     auto pkt = AudioPacket::deserialize(data, len);
     auto frame = AudioFrame::from_packet(pkt);
     mixer_.push_input(participant_id, frame);
+
+    // Notify mixer thread if all frames have arrived this cycle
+    uint32_t received = frames_received_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (received >= count) {
+#ifdef __linux__
+        uint64_t val = 1;
+        (void)::write(notify_fd_, &val, sizeof(val));
+#endif
+    }
 }
 
 void Room::set_gain(const std::string& listener_id,
@@ -199,25 +280,25 @@ void Room::mixer_thread_func() {
     constexpr auto mix_interval =
         std::chrono::microseconds(1000000 * kSamplesPerFrame / kSampleRate);
 
-    auto next_tick = std::chrono::steady_clock::now() + mix_interval;
-
     while (running_) {
-        mixer_.mix_cycle();
-        send_outputs();
-
 #ifdef __linux__
-        // High-resolution absolute-time sleep (~50μs precision vs 1-4ms for sleep_for)
-        auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            next_tick.time_since_epoch()).count();
-        struct timespec ts;
-        ts.tv_sec = ns / 1000000000;
-        ts.tv_nsec = ns % 1000000000;
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
+        // Event-driven: wait for all participants' frames or timeout
+        struct pollfd pfd;
+        pfd.fd = notify_fd_;
+        pfd.events = POLLIN;
+        // Timeout slightly above one frame period to catch stragglers
+        int ret = poll(&pfd, 1, 3);
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            uint64_t val;
+            (void)::read(notify_fd_, &val, sizeof(val));
+        }
 #else
-        std::this_thread::sleep_until(next_tick);
+        std::this_thread::sleep_for(mix_interval);
 #endif
 
-        next_tick += mix_interval;
+        frames_received_.store(0, std::memory_order_release);
+        mixer_.mix_cycle();
+        send_outputs();
     }
 }
 

@@ -64,6 +64,10 @@ public:
                   const std::string& source_id,
                   bool muted);
 
+    /// Get gain entry for a source in a listener's mix. Thread-safe.
+    GainEntry get_gain_entry(const std::string& listener_id,
+                              const std::string& source_id);
+
     /// Push an incoming audio frame from a participant.
     /// Called from the network receive thread.
     bool push_input(const std::string& participant_id, const AudioFrame& frame);

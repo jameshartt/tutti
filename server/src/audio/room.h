@@ -119,6 +119,10 @@ private:
     // RT mixer thread
     std::thread mixer_thread_;
     std::atomic<bool> running_{false};
+
+    // Event-driven mixer: fires when all participants submit a frame
+    int notify_fd_ = -1;  // Linux eventfd, -1 on other platforms
+    std::atomic<uint32_t> frames_received_{0};
 };
 
 } // namespace tutti

@@ -13,7 +13,7 @@ const SAMPLES_PER_FRAME = 128;
 // Prebuffer: accumulate this many frames before starting playback.
 // Prevents phase-locked underruns where the read/write cadence aligns
 // such that every other quantum finds an empty buffer.
-const PREBUFFER_FRAMES = 2; // ~5ms at 48kHz
+const PREBUFFER_FRAMES = 1; // ~2.67ms at 48kHz
 
 interface InitMessage {
 	type: 'init';

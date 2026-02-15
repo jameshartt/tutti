@@ -47,6 +47,16 @@ void Mixer::set_mute(const std::string& listener_id,
     gains_[listener_id][source_id].muted = muted;
 }
 
+GainEntry Mixer::get_gain_entry(const std::string& listener_id,
+                                 const std::string& source_id) {
+    std::lock_guard<std::mutex> lock(gains_mutex_);
+    auto lit = gains_.find(listener_id);
+    if (lit == gains_.end()) return {};
+    auto sit = lit->second.find(source_id);
+    if (sit == lit->second.end()) return {};
+    return sit->second;
+}
+
 bool Mixer::push_input(const std::string& participant_id,
                        const AudioFrame& frame) {
     std::lock_guard<std::mutex> lock(participants_mutex_);
