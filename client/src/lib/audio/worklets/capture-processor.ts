@@ -19,6 +19,10 @@ interface InitMessage {
 	ringBufferSAB: SharedArrayBuffer;
 }
 
+interface InjectTestMessage {
+	type: 'inject-test';
+}
+
 class CaptureProcessor extends AudioWorkletProcessor {
 	private pointers: Int32Array | null = null;
 	private data: Int16Array | null = null;
@@ -31,12 +35,17 @@ class CaptureProcessor extends AudioWorkletProcessor {
 	private currentFillLevel = 0;
 	private statsFrameCounter = 0;
 
+	// Loopback test injection
+	private injectTest = false;
+
 	constructor() {
 		super();
 		this.port.onmessage = (event: MessageEvent) => {
-			const msg = event.data;
+			const msg = event.data as InitMessage | InjectTestMessage;
 			if (msg.type === 'init') {
-				this.initRingBuffer(msg.ringBufferSAB);
+				this.initRingBuffer((msg as InitMessage).ringBufferSAB);
+			} else if (msg.type === 'inject-test') {
+				this.injectTest = true;
 			}
 		};
 	}
@@ -62,6 +71,16 @@ class CaptureProcessor extends AudioWorkletProcessor {
 			const s = samples[i];
 			// Clamp and convert
 			this.tempBuffer[i] = s >= 1.0 ? 32767 : s <= -1.0 ? -32768 : (s * 32767) | 0;
+		}
+
+		// Loopback test: replace frame with distinctive 3-pulse pattern
+		if (this.injectTest) {
+			this.injectTest = false;
+			this.tempBuffer.fill(0);
+			// 3 pulses at samples 0, 48, 96 — a ~2ms fingerprint
+			this.tempBuffer[0] = 32767;
+			this.tempBuffer[48] = 32767;
+			this.tempBuffer[96] = 32767;
 		}
 
 		// Write to ring buffer (inline for zero-allocation)

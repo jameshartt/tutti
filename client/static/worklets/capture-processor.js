@@ -26,12 +26,17 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		this._currentFillLevel = 0;
 		this._statsFrameCounter = 0;
 
+		// Loopback test injection
+		this._injectTest = false;
+
 		this.port.onmessage = (event) => {
 			if (event.data.type === 'init') {
 				const sab = event.data.ringBufferSAB;
 				this._pointers = new Int32Array(sab, 0, 2);
 				this._data = new Int16Array(sab, 8);
 				this._capacity = this._data.length;
+			} else if (event.data.type === 'inject-test') {
+				this._injectTest = true;
 			}
 		};
 	}
@@ -49,6 +54,16 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		for (let i = 0; i < samples.length; i++) {
 			const s = samples[i];
 			this._tempBuffer[i] = s >= 1.0 ? 32767 : s <= -1.0 ? -32768 : (s * 32767) | 0;
+		}
+
+		// Loopback test: replace frame with distinctive 3-pulse pattern
+		if (this._injectTest) {
+			this._injectTest = false;
+			this._tempBuffer.fill(0);
+			// 3 pulses at samples 0, 48, 96 — a ~2ms fingerprint
+			this._tempBuffer[0] = 32767;
+			this._tempBuffer[48] = 32767;
+			this._tempBuffer[96] = 32767;
 		}
 
 		// Write to ring buffer (inline for zero-allocation)

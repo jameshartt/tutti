@@ -37,13 +37,24 @@ void SessionBinder::on_message(TransportSession* session,
                                 const std::string& message) {
     std::string sid = session->id();
 
-    // Check if this session is already bound — forward control messages to room
+    // Check if this session is already bound — handle control messages
     {
         std::lock_guard<std::mutex> lock(bindings_mutex_);
         auto it = bindings_.find(sid);
         if (it != bindings_.end()) {
-            // Already bound — handle control messages (gain, mute, etc.)
-            // For now, these are handled client-side via the room store
+            // Echo ping messages back as pong for RTT measurement
+            if (message.find("\"ping\"") != std::string::npos) {
+                nlohmann::json msg;
+                try {
+                    msg = nlohmann::json::parse(message);
+                } catch (...) {
+                    return;
+                }
+                if (msg.value("type", "") == "ping") {
+                    msg["type"] = "pong";
+                    it->second.session->send_reliable(msg.dump());
+                }
+            }
             return;
         }
     }

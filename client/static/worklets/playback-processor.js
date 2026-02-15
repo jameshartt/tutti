@@ -32,6 +32,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		this._currentFillLevel = 0;
 		this._statsFrameCounter = 0;
 
+		// Loopback test detection
+		this._detectTest = false;
+
 		this.port.onmessage = (event) => {
 			if (event.data.type === 'init') {
 				const sab = event.data.ringBufferSAB;
@@ -39,6 +42,10 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this._data = new Int16Array(sab, 8);
 				this._capacity = this._data.length;
 				this._prebuffering = true;
+			} else if (event.data.type === 'detect-test') {
+				this._detectTest = true;
+			} else if (event.data.type === 'stop-detect-test') {
+				this._detectTest = false;
 			}
 		};
 	}
@@ -115,6 +122,19 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
 		for (let i = toRead; i < outChannel.length; i++) {
 			outChannel[i] = 0;
+		}
+
+		// Loopback test: check for 3-pulse pattern in received samples
+		if (this._detectTest && toRead >= 97) {
+			const THRESHOLD = 30000; // near-max Int16
+			if (
+				this._tempBuffer[0] >= THRESHOLD &&
+				this._tempBuffer[48] >= THRESHOLD &&
+				this._tempBuffer[96] >= THRESHOLD
+			) {
+				this.port.postMessage({ type: 'test-detected' });
+				this._detectTest = false;
+			}
 		}
 
 		this._reportStats();

@@ -21,6 +21,14 @@ interface InitMessage {
 	ringBufferSAB: SharedArrayBuffer;
 }
 
+interface DetectTestMessage {
+	type: 'detect-test';
+}
+
+interface StopDetectTestMessage {
+	type: 'stop-detect-test';
+}
+
 class PlaybackProcessor extends AudioWorkletProcessor {
 	private pointers: Int32Array | null = null;
 	private data: Int16Array | null = null;
@@ -35,12 +43,19 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 	private currentFillLevel = 0;
 	private statsFrameCounter = 0;
 
+	// Loopback test detection
+	private detectTest = false;
+
 	constructor() {
 		super();
 		this.port.onmessage = (event: MessageEvent) => {
-			const msg = event.data;
+			const msg = event.data as InitMessage | DetectTestMessage | StopDetectTestMessage;
 			if (msg.type === 'init') {
-				this.initRingBuffer(msg.ringBufferSAB);
+				this.initRingBuffer((msg as InitMessage).ringBufferSAB);
+			} else if (msg.type === 'detect-test') {
+				this.detectTest = true;
+			} else if (msg.type === 'stop-detect-test') {
+				this.detectTest = false;
 			}
 		};
 	}
@@ -126,6 +141,19 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		// Zero-fill remainder if we read fewer samples than needed
 		for (let i = toRead; i < outChannel.length; i++) {
 			outChannel[i] = 0;
+		}
+
+		// Loopback test: check for 3-pulse pattern in received samples
+		if (this.detectTest && toRead >= 97) {
+			const THRESHOLD = 30000; // near-max Int16
+			if (
+				this.tempBuffer[0] >= THRESHOLD &&
+				this.tempBuffer[48] >= THRESHOLD &&
+				this.tempBuffer[96] >= THRESHOLD
+			) {
+				this.port.postMessage({ type: 'test-detected' });
+				this.detectTest = false;
+			}
 		}
 
 		this.reportStats();

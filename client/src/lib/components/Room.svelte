@@ -4,6 +4,7 @@
 	import VacateNotice from './VacateNotice.svelte';
 	import LatencyDisplay from './LatencyDisplay.svelte';
 	import AudioDiagnostics from './AudioDiagnostics.svelte';
+	import LatencyTester from './LatencyTester.svelte';
 	import { roomState, leaveRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
@@ -13,7 +14,9 @@
 	import { TransportBridge } from '../audio/transport-bridge.js';
 	import { createTransport, detectTransportType, getTransportDescription } from '../transport/detect.js';
 	import { resumeAudioContext, closeAudioContext, getAudioContext } from '../audio/context.js';
-	import type { Participant, LatencyBreakdown } from '../audio/types.js';
+	import { RTTMonitor } from '../latency/rtt-monitor.js';
+	import { latencyBreakdown } from '../latency/breakdown.js';
+	import type { Participant, LatencyBreakdown, LatencyInfo } from '../audio/types.js';
 
 	let { roomName }: { roomName: string } = $props();
 
@@ -21,13 +24,15 @@
 	let vacateNotice = $state(false);
 	let pipelineState = $state<string>('inactive');
 	let transportDesc = $state('');
-	let latencyBreakdown: LatencyBreakdown | null = $state(null);
+	let currentBreakdown: LatencyBreakdown | null = $state(null);
+	let currentLatencyInfo: LatencyInfo | null = $state(null);
 	let nerdMode = $state(false);
 
 	let capture: CaptureHandle | null = null;
 	let playback: PlaybackHandle | null = null;
 	let bridge: TransportBridge | null = null;
 	let activeTransport: import('../transport/transport.js').Transport | null = null;
+	let rttMonitor: RTTMonitor | null = null;
 	let errorDetail = $state('');
 	let transportConnected = $state(false);
 	let participantId: string | null = null;
@@ -45,6 +50,16 @@
 
 	settings.subscribe((s) => {
 		nerdMode = s.nerdMode;
+	});
+
+	latencyBreakdown.subscribe((lb) => {
+		if (lb) {
+			currentBreakdown = lb.breakdown;
+			currentLatencyInfo = lb.info;
+		} else {
+			currentBreakdown = null;
+			currentLatencyInfo = null;
+		}
 	});
 
 	async function startAudio() {
@@ -112,6 +127,10 @@
 				bridge.start();
 				activeTransport = transport;
 				transportConnected = true;
+
+				// Start RTT monitoring
+				rttMonitor = new RTTMonitor(transport);
+				rttMonitor.start();
 			};
 
 			// Try preferred transport, fall back if it fails
@@ -234,6 +253,9 @@
 			case 'vacate_request':
 				roomState.update((s) => ({ ...s, vacateNotice: true }));
 				break;
+			case 'pong':
+				rttMonitor?.handlePong(msg as unknown as { id: number });
+				break;
 		}
 	}
 
@@ -263,6 +285,8 @@
 
 	async function handleLeave() {
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+		rttMonitor?.stop();
+		rttMonitor = null;
 		bridge?.stop();
 		activeTransport?.disconnect();
 		capture?.stop();
@@ -274,6 +298,8 @@
 
 	onDestroy(() => {
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+		rttMonitor?.stop();
+		rttMonitor = null;
 		bridge?.stop();
 		activeTransport?.disconnect();
 		capture?.stop();
@@ -320,7 +346,11 @@
 		<Mixer {participants} onGainChange={handleGainChange} onMuteToggle={handleMuteToggle} />
 
 		{#if nerdMode}
+			<LatencyDisplay latency={currentLatencyInfo} breakdown={currentBreakdown} />
 			<AudioDiagnostics {transportDesc} {transportConnected} />
+			{#if capture && playback}
+				<LatencyTester capturePort={capture.capturePort} playbackPort={playback.playbackPort} />
+			{/if}
 		{/if}
 	{/if}
 </div>

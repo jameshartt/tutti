@@ -15,6 +15,8 @@
 		captureFillLevel: 0,
 		packetsSent: 0,
 		packetsReceived: 0,
+		networkRTT: 0,
+		networkOneWayMs: 0,
 		sampleRate: 0,
 		contextState: 'suspended'
 	});
