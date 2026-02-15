@@ -8,12 +8,12 @@
 	import { roomState, leaveRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
-	import { updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo } from '../stores/audio-stats.js';
+	import { updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs } from '../stores/audio-stats.js';
 	import { startCapture, type CaptureHandle } from '../audio/capture.js';
 	import { startPlayback, type PlaybackHandle } from '../audio/playback.js';
 	import { TransportBridge } from '../audio/transport-bridge.js';
 	import { createTransport, detectTransportType, getTransportDescription } from '../transport/detect.js';
-	import { resumeAudioContext, closeAudioContext, getAudioContext } from '../audio/context.js';
+	import { resumeAudioContext, closeAudioContext, getAudioContext, getHardwareLatency } from '../audio/context.js';
 	import { RTTMonitor } from '../latency/rtt-monitor.js';
 	import { latencyBreakdown } from '../latency/breakdown.js';
 	import type { Participant, LatencyBreakdown, LatencyInfo } from '../audio/types.js';
@@ -208,6 +208,9 @@
 			// Also update context state in case it changes
 			const ctx = getAudioContext();
 			updateContextInfo(ctx.sampleRate, ctx.state);
+			// Push hardware output latency for diagnostics panel
+			const hw = getHardwareLatency();
+			updateHardwareOutputMs(hw.outputMs);
 		}, 500);
 	}
 

@@ -26,6 +26,8 @@ export interface AudioStats {
 	// Context
 	sampleRate: number;
 	contextState: string;
+	// Hardware
+	hardwareOutputMs: number;
 }
 
 const defaultStats: AudioStats = {
@@ -42,7 +44,8 @@ const defaultStats: AudioStats = {
 	networkRTT: 0,
 	networkOneWayMs: 0,
 	sampleRate: 0,
-	contextState: 'suspended'
+	contextState: 'suspended',
+	hardwareOutputMs: 0
 };
 
 export const audioStats = writable<AudioStats>(defaultStats);
@@ -101,5 +104,12 @@ export function updateContextInfo(sampleRate: number, contextState: string): voi
 		...s,
 		sampleRate,
 		contextState
+	}));
+}
+
+export function updateHardwareOutputMs(hardwareOutputMs: number): void {
+	audioStats.update((s) => ({
+		...s,
+		hardwareOutputMs
 	}));
 }

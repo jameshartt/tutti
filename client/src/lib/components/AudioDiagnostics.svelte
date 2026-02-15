@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { audioStats, type AudioStats } from '../stores/audio-stats.js';
+	import { getLatencyWarning } from '../audio/context.js';
 
 	let { transportDesc, transportConnected }: { transportDesc: string; transportConnected: boolean } =
 		$props();
@@ -18,10 +19,22 @@
 		networkRTT: 0,
 		networkOneWayMs: 0,
 		sampleRate: 0,
-		contextState: 'suspended'
+		contextState: 'suspended',
+		hardwareOutputMs: 0
 	});
 
 	audioStats.subscribe((s) => (stats = s));
+
+	let latencyWarning = $derived(stats.hardwareOutputMs > 15 ? getLatencyWarning() : null);
+	let copied = $state(false);
+
+	async function copyCommand() {
+		if (latencyWarning?.command) {
+			await navigator.clipboard.writeText(latencyWarning.command);
+			copied = true;
+			setTimeout(() => (copied = false), 2000);
+		}
+	}
 
 	// Ring buffer capacity (matches SAMPLES_PER_FRAME * 8 in playback.ts / capture.ts)
 	const BUFFER_CAPACITY = 1024;
@@ -43,6 +56,19 @@
 </script>
 
 <div class="diagnostics">
+	{#if latencyWarning}
+		<div class="latency-warning">
+			<div class="warning-title">High Hardware Latency</div>
+			<p class="warning-message">{latencyWarning.message}</p>
+			<pre class="warning-instructions">{latencyWarning.instructions}</pre>
+			{#if latencyWarning.command}
+				<button class="copy-btn" onclick={copyCommand}>
+					{copied ? 'Copied!' : 'Copy command'}
+				</button>
+			{/if}
+		</div>
+	{/if}
+
 	<div class="section">
 		<div class="section-title">Buffer Health</div>
 		<div class="buffer-row">
@@ -199,5 +225,55 @@
 
 	.warn {
 		color: #facc15;
+	}
+
+	.latency-warning {
+		background: #3a3a1a;
+		border: 1px solid #facc15;
+		border-radius: 6px;
+		padding: 0.6rem 0.75rem;
+	}
+
+	.warning-title {
+		font-weight: 600;
+		color: #facc15;
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin-bottom: 0.3rem;
+	}
+
+	.warning-message {
+		color: #ccc;
+		margin: 0 0 0.4rem;
+		font-size: 0.68rem;
+		line-height: 1.4;
+	}
+
+	.warning-instructions {
+		background: #1a1a1a;
+		border-radius: 4px;
+		padding: 0.5rem;
+		margin: 0 0 0.4rem;
+		font-size: 0.62rem;
+		line-height: 1.5;
+		color: #aaa;
+		white-space: pre-wrap;
+		overflow-x: auto;
+	}
+
+	.copy-btn {
+		padding: 3px 10px;
+		border: 1px solid #facc15;
+		border-radius: 4px;
+		background: transparent;
+		color: #facc15;
+		cursor: pointer;
+		font-size: 0.62rem;
+		font-family: monospace;
+	}
+
+	.copy-btn:hover {
+		background: #facc1520;
 	}
 </style>

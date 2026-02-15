@@ -22,7 +22,7 @@
 			<table class="latency-breakdown">
 				<tbody>
 					<tr>
-						<td>Hardware input</td>
+						<td>Hardware input (est.)</td>
 						<td>{breakdown.hardwareInputMs.toFixed(1)} ms</td>
 					</tr>
 					<tr>
