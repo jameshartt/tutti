@@ -13,7 +13,8 @@ const SAMPLES_PER_FRAME = 128;
 // Prebuffer: accumulate this many frames before starting playback.
 // Prevents phase-locked underruns where the read/write cadence aligns
 // such that every other quantum finds an empty buffer.
-const PREBUFFER_FRAMES = 2; // ~5ms at 48kHz
+const PREBUFFER_FRAMES = 1; // ~2.67ms at 48kHz
+const STATS_INTERVAL = 75; // ~200ms at 128 samples/frame @ 48kHz
 
 class PlaybackProcessor extends AudioWorkletProcessor {
 	constructor() {
@@ -23,6 +24,13 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		this._capacity = 0;
 		this._prebuffering = true;
 		this._tempBuffer = new Int16Array(SAMPLES_PER_FRAME);
+
+		// Diagnostics counters (lightweight integers, no allocations)
+		this._underrunCount = 0;
+		this._partialFrameCount = 0;
+		this._totalFrames = 0;
+		this._currentFillLevel = 0;
+		this._statsFrameCounter = 0;
 
 		this.port.onmessage = (event) => {
 			if (event.data.type === 'init') {
@@ -42,17 +50,20 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		if (!output || !output[0]) return true;
 
 		const outChannel = output[0];
+		this._totalFrames++;
 
 		// Read from ring buffer (inline for zero-allocation)
 		const write = Atomics.load(this._pointers, 0);
 		const read = Atomics.load(this._pointers, 1);
 		const available = (write - read + this._capacity) % this._capacity;
+		this._currentFillLevel = available;
 
 		// Prebuffer: wait until enough data accumulates before starting
 		// playback, so we have a cushion against timing jitter.
 		if (this._prebuffering) {
 			if (available < SAMPLES_PER_FRAME * PREBUFFER_FRAMES) {
 				outChannel.fill(0);
+				this._reportStats();
 				return true;
 			}
 			this._prebuffering = false;
@@ -61,8 +72,14 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		const toRead = Math.min(outChannel.length, available);
 
 		if (toRead === 0) {
+			this._underrunCount++;
 			outChannel.fill(0);
+			this._reportStats();
 			return true;
+		}
+
+		if (toRead < outChannel.length) {
+			this._partialFrameCount++;
 		}
 
 		const firstChunk = Math.min(toRead, this._capacity - read);
@@ -84,7 +101,23 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 			outChannel[i] = 0;
 		}
 
+		this._reportStats();
 		return true;
+	}
+
+	_reportStats() {
+		this._statsFrameCounter++;
+		if (this._statsFrameCounter >= STATS_INTERVAL) {
+			this._statsFrameCounter = 0;
+			this.port.postMessage({
+				type: 'stats',
+				underruns: this._underrunCount,
+				partialFrames: this._partialFrameCount,
+				totalFrames: this._totalFrames,
+				fillLevel: this._currentFillLevel,
+				prebuffering: this._prebuffering
+			});
+		}
 	}
 }
 

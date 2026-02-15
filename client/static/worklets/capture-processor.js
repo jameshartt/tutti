@@ -10,6 +10,7 @@
  */
 
 const SAMPLES_PER_FRAME = 128;
+const STATS_INTERVAL = 75; // ~200ms at 128 samples/frame @ 48kHz
 
 class CaptureProcessor extends AudioWorkletProcessor {
 	constructor() {
@@ -18,6 +19,12 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		this._data = null;
 		this._capacity = 0;
 		this._tempBuffer = new Int16Array(SAMPLES_PER_FRAME);
+
+		// Diagnostics counters (lightweight integers, no allocations)
+		this._droppedFrames = 0;
+		this._totalFrames = 0;
+		this._currentFillLevel = 0;
+		this._statsFrameCounter = 0;
 
 		this.port.onmessage = (event) => {
 			if (event.data.type === 'init') {
@@ -36,6 +43,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		if (!input || !input[0]) return true;
 
 		const samples = input[0];
+		this._totalFrames++;
 
 		// Convert Float32 [-1, 1] to Int16 [-32768, 32767]
 		for (let i = 0; i < samples.length; i++) {
@@ -47,9 +55,14 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		const write = Atomics.load(this._pointers, 0);
 		const read = Atomics.load(this._pointers, 1);
 		const available = (this._capacity - 1) - ((write - read + this._capacity) % this._capacity);
+		this._currentFillLevel = available;
 
 		const toWrite = Math.min(samples.length, available);
-		if (toWrite === 0) return true;
+		if (toWrite === 0) {
+			this._droppedFrames++;
+			this._reportStats();
+			return true;
+		}
 
 		const firstChunk = Math.min(toWrite, this._capacity - write);
 		this._data.set(this._tempBuffer.subarray(0, firstChunk), write);
@@ -63,7 +76,21 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		// Notify main thread that a frame is available for sending
 		this.port.postMessage({ type: 'frame-ready' });
 
+		this._reportStats();
 		return true;
+	}
+
+	_reportStats() {
+		this._statsFrameCounter++;
+		if (this._statsFrameCounter >= STATS_INTERVAL) {
+			this._statsFrameCounter = 0;
+			this.port.postMessage({
+				type: 'stats',
+				droppedFrames: this._droppedFrames,
+				totalFrames: this._totalFrames,
+				fillLevel: this._currentFillLevel
+			});
+		}
 	}
 }
 

@@ -3,14 +3,16 @@
 	import Mixer from './Mixer.svelte';
 	import VacateNotice from './VacateNotice.svelte';
 	import LatencyDisplay from './LatencyDisplay.svelte';
+	import AudioDiagnostics from './AudioDiagnostics.svelte';
 	import { roomState, leaveRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
+	import { updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo } from '../stores/audio-stats.js';
 	import { startCapture, type CaptureHandle } from '../audio/capture.js';
 	import { startPlayback, type PlaybackHandle } from '../audio/playback.js';
 	import { TransportBridge } from '../audio/transport-bridge.js';
 	import { createTransport, detectTransportType, getTransportDescription } from '../transport/detect.js';
-	import { resumeAudioContext, closeAudioContext } from '../audio/context.js';
+	import { resumeAudioContext, closeAudioContext, getAudioContext } from '../audio/context.js';
 	import type { Participant, LatencyBreakdown } from '../audio/types.js';
 
 	let { roomName }: { roomName: string } = $props();
@@ -29,6 +31,7 @@
 	let errorDetail = $state('');
 	let transportConnected = $state(false);
 	let participantId: string | null = null;
+	let statsTimer: ReturnType<typeof setInterval> | null = null;
 
 	roomState.subscribe((s) => {
 		participants = s.participants;
@@ -140,6 +143,9 @@
 				}
 			}
 
+			// Wire up diagnostics stats listeners
+			wireStats();
+
 			setPipelineState('active');
 		} catch (err) {
 			const message = err instanceof Error ? err.message : 'Unknown error';
@@ -147,6 +153,47 @@
 			errorDetail = message;
 			setPipelineState('error', message);
 		}
+	}
+
+	function wireStats() {
+		// Update audio context info
+		const ctx = getAudioContext();
+		updateContextInfo(ctx.sampleRate, ctx.state);
+
+		// Listen for playback worklet stats
+		if (playback) {
+			playback.playbackPort.onmessage = (event: MessageEvent) => {
+				if (event.data?.type === 'stats') {
+					updatePlaybackStats(event.data);
+				}
+			};
+		}
+
+		// Listen for capture worklet stats (port already handles frame-ready via TransportBridge)
+		if (capture) {
+			const originalHandler = capture.capturePort.onmessage;
+			capture.capturePort.onmessage = (event: MessageEvent) => {
+				if (event.data?.type === 'stats') {
+					updateCaptureStats(event.data);
+				} else if (originalHandler) {
+					originalHandler.call(capture!.capturePort, event);
+				}
+			};
+		}
+
+		// Poll transport stats periodically
+		statsTimer = setInterval(() => {
+			if (bridge) {
+				updateTransportStats(bridge.getStats());
+			}
+			// Also update context state in case it changes
+			const ctx = getAudioContext();
+			updateContextInfo(ctx.sampleRate, ctx.state);
+		}, 500);
+	}
+
+	function toggleNerdMode() {
+		settings.update((s) => ({ ...s, nerdMode: !s.nerdMode }));
 	}
 
 	function handleControlMessage(msg: Record<string, unknown>) {
@@ -215,6 +262,7 @@
 	}
 
 	async function handleLeave() {
+		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		bridge?.stop();
 		activeTransport?.disconnect();
 		capture?.stop();
@@ -225,6 +273,7 @@
 	}
 
 	onDestroy(() => {
+		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		bridge?.stop();
 		activeTransport?.disconnect();
 		capture?.stop();
@@ -238,7 +287,10 @@
 
 	<header class="room-header">
 		<h1>{roomName}</h1>
-		<button class="leave-btn" onclick={handleLeave}>Leave</button>
+		<div class="header-actions">
+			<button class="nerd-btn" class:active={nerdMode} onclick={toggleNerdMode} title="Toggle diagnostics">&#9881;</button>
+			<button class="leave-btn" onclick={handleLeave}>Leave</button>
+		</div>
 	</header>
 
 	{#if pipelineState === 'inactive'}
@@ -268,10 +320,7 @@
 		<Mixer {participants} onGainChange={handleGainChange} onMuteToggle={handleMuteToggle} />
 
 		{#if nerdMode}
-			<div class="nerd-info">
-				<div class="transport-info">Transport: {transportDesc}</div>
-				<div class="transport-info">Connected: {transportConnected ? 'yes' : 'no'}</div>
-			</div>
+			<AudioDiagnostics {transportDesc} {transportConnected} />
 		{/if}
 	{/if}
 </div>
@@ -298,6 +347,28 @@
 	h1 {
 		font-size: 1.5rem;
 		margin: 0;
+	}
+
+	.header-actions {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.nerd-btn {
+		padding: 4px 8px;
+		border: 1px solid #555;
+		border-radius: 6px;
+		background: transparent;
+		color: #888;
+		cursor: pointer;
+		font-size: 1rem;
+		line-height: 1;
+	}
+
+	.nerd-btn.active {
+		color: #4ade80;
+		border-color: #4ade80;
 	}
 
 	.leave-btn {
@@ -370,16 +441,4 @@
 		font-size: 0.85rem;
 	}
 
-	.nerd-info {
-		margin-top: 1rem;
-		padding: 0.75rem;
-		border: 1px solid #333;
-		border-radius: 6px;
-		font-size: 0.75rem;
-		color: #888;
-	}
-
-	.transport-info {
-		font-family: monospace;
-	}
 </style>

@@ -16,6 +16,8 @@ const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 8; // 1024 samples ≈ 21ms
 export interface PlaybackHandle {
 	/** SharedArrayBuffer for writing received audio (Int16 PCM) */
 	ringBufferSAB: SharedArrayBuffer;
+	/** MessagePort for receiving stats from the playback worklet */
+	playbackPort: MessagePort;
 	/** Stop playback and release resources */
 	stop: () => void;
 }
@@ -33,13 +35,24 @@ export async function startPlayback(): Promise<PlaybackHandle> {
 	// Create ring buffer
 	const ringBufferSAB = createRingBufferSAB(RING_BUFFER_CAPACITY);
 
-	// Create worklet node
+	// Create worklet node.
+	// Use numberOfInputs: 1 so Safari/WebKit treats this as an active node.
+	// Safari's audio graph scheduler skips process() for pure source nodes
+	// (numberOfInputs: 0) that have no upstream active source.
 	const workletNode = new AudioWorkletNode(ctx, 'playback-processor', {
-		numberOfInputs: 0,
+		numberOfInputs: 1,
 		numberOfOutputs: 1,
 		channelCount: 1,
 		channelCountMode: 'explicit'
 	});
+
+	// Connect a silent source to the worklet input to keep Safari's
+	// audio graph scheduler calling process(). ConstantSourceNode with
+	// offset 0 produces silence but counts as an active source.
+	const keepAlive = ctx.createConstantSource();
+	keepAlive.offset.value = 0;
+	keepAlive.start();
+	keepAlive.connect(workletNode);
 
 	// Initialize worklet with ring buffer
 	workletNode.port.postMessage({
@@ -50,9 +63,14 @@ export async function startPlayback(): Promise<PlaybackHandle> {
 	// Connect worklet → speakers
 	workletNode.connect(ctx.destination);
 
+	console.log(`[Playback] Worklet connected to destination (sampleRate=${ctx.sampleRate}, state=${ctx.state})`);
+
 	return {
 		ringBufferSAB,
+		playbackPort: workletNode.port,
 		stop() {
+			keepAlive.stop();
+			keepAlive.disconnect();
 			workletNode.disconnect();
 		}
 	};

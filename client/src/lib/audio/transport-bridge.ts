@@ -41,6 +41,7 @@ export class TransportBridge {
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
 	private sendSequence = 0;
 	private sendTimestamp = 0;
+	private incomingCount = 0;
 
 	// Pre-allocated buffers for zero-allocation on hot path
 	private readBuffer = new Int16Array(SAMPLES_PER_FRAME);
@@ -89,6 +90,14 @@ export class TransportBridge {
 		}
 	}
 
+	/** Get transport packet counters for diagnostics */
+	getStats(): { packetsSent: number; packetsReceived: number } {
+		return {
+			packetsSent: this.sendSequence,
+			packetsReceived: this.incomingCount
+		};
+	}
+
 	/** Read from capture ring buffer, packetize, and send */
 	private drainCapture(): void {
 		while (this.captureReader.availableRead() >= SAMPLES_PER_FRAME) {
@@ -116,5 +125,11 @@ export class TransportBridge {
 
 		// Write received samples to playback ring buffer
 		this.playbackWriter.write(packet.samples);
+
+		// Periodic diagnostic: log every ~1s to confirm data is flowing
+		this.incomingCount++;
+		if (this.incomingCount === 1 || this.incomingCount % 375 === 0) {
+			console.log(`[TransportBridge] Received ${this.incomingCount} packets, latest seq=${packet.sequence}, ${data.byteLength} bytes`);
+		}
 	}
 }

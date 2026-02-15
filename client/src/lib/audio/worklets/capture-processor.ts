@@ -11,6 +11,7 @@
 
 // Constants duplicated here because AudioWorklet has no module imports
 const SAMPLES_PER_FRAME = 128;
+const STATS_INTERVAL = 75; // ~200ms at 128 samples/frame @ 48kHz
 
 /** Message types sent to/from the worklet */
 interface InitMessage {
@@ -23,6 +24,12 @@ class CaptureProcessor extends AudioWorkletProcessor {
 	private data: Int16Array | null = null;
 	private capacity = 0;
 	private tempBuffer = new Int16Array(SAMPLES_PER_FRAME);
+
+	// Diagnostics counters (lightweight integers, no allocations)
+	private droppedFrames = 0;
+	private totalFrames = 0;
+	private currentFillLevel = 0;
+	private statsFrameCounter = 0;
 
 	constructor() {
 		super();
@@ -48,6 +55,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		if (!input || !input[0]) return true;
 
 		const samples = input[0]; // Mono channel 0
+		this.totalFrames++;
 
 		// Convert Float32 [-1, 1] to Int16 [-32768, 32767]
 		for (let i = 0; i < samples.length; i++) {
@@ -60,9 +68,15 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		const write = Atomics.load(this.pointers, 0);
 		const read = Atomics.load(this.pointers, 1);
 		const available = (this.capacity - 1) - ((write - read + this.capacity) % this.capacity);
+		this.currentFillLevel = available;
 
 		const toWrite = Math.min(samples.length, available);
-		if (toWrite === 0) return true; // Buffer full - drop frame
+		if (toWrite === 0) {
+			// Buffer full - drop frame
+			this.droppedFrames++;
+			this.reportStats();
+			return true;
+		}
 
 		const firstChunk = Math.min(toWrite, this.capacity - write);
 		this.data.set(this.tempBuffer.subarray(0, firstChunk), write);
@@ -76,7 +90,21 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		// Notify main thread that a frame is available for sending
 		this.port.postMessage({ type: 'frame-ready' });
 
+		this.reportStats();
 		return true; // Keep processor alive
+	}
+
+	private reportStats(): void {
+		this.statsFrameCounter++;
+		if (this.statsFrameCounter >= STATS_INTERVAL) {
+			this.statsFrameCounter = 0;
+			this.port.postMessage({
+				type: 'stats',
+				droppedFrames: this.droppedFrames,
+				totalFrames: this.totalFrames,
+				fillLevel: this.currentFillLevel
+			});
+		}
 	}
 }
 
