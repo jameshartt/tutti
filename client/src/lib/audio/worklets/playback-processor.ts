@@ -43,8 +43,10 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 	private currentFillLevel = 0;
 	private statsFrameCounter = 0;
 
-	// Loopback test detection
+	// Loopback test detection (pre-allocated for zero-allocation on audio thread)
 	private detectTest = false;
+	private prevTail = new Int16Array(96); // last 96 samples of previous frame
+	private scanBuffer = new Int16Array(96 + SAMPLES_PER_FRAME); // [prevTail | current]
 
 	constructor() {
 		super();
@@ -54,6 +56,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this.initRingBuffer((msg as InitMessage).ringBufferSAB);
 			} else if (msg.type === 'detect-test') {
 				this.detectTest = true;
+				this.prevTail.fill(0);
 			} else if (msg.type === 'stop-detect-test') {
 				this.detectTest = false;
 			}
@@ -144,16 +147,37 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 			outChannel[i] = 0;
 		}
 
-		// Loopback test: check for 3-pulse pattern in received samples
-		if (this.detectTest && toRead >= 97) {
+		// Loopback test: scan for 3-pulse pattern at any offset,
+		// using a sliding window across frame boundaries so detection
+		// works regardless of ring buffer read alignment.
+		if (this.detectTest) {
 			const THRESHOLD = 30000; // near-max Int16
-			if (
-				this.tempBuffer[0] >= THRESHOLD &&
-				this.tempBuffer[48] >= THRESHOLD &&
-				this.tempBuffer[96] >= THRESHOLD
-			) {
-				this.port.postMessage({ type: 'test-detected' });
-				this.detectTest = false;
+
+			// Build search window: [previous tail (96) | current frame (toRead)]
+			this.scanBuffer.set(this.prevTail);
+			this.scanBuffer.set(this.tempBuffer.subarray(0, toRead), 96);
+			const scanLen = 96 + toRead;
+
+			for (let i = 0; i <= scanLen - 97; i++) {
+				if (
+					this.scanBuffer[i] >= THRESHOLD &&
+					this.scanBuffer[i + 48] >= THRESHOLD &&
+					this.scanBuffer[i + 96] >= THRESHOLD
+				) {
+					this.port.postMessage({ type: 'test-detected' });
+					this.detectTest = false;
+					break;
+				}
+			}
+
+			// Save tail for cross-frame detection on next callback
+			if (this.detectTest) {
+				if (toRead >= 96) {
+					this.prevTail.set(this.tempBuffer.subarray(toRead - 96, toRead));
+				} else {
+					this.prevTail.copyWithin(0, toRead);
+					this.prevTail.set(this.tempBuffer.subarray(0, toRead), 96 - toRead);
+				}
 			}
 		}
 

@@ -32,8 +32,10 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		this._currentFillLevel = 0;
 		this._statsFrameCounter = 0;
 
-		// Loopback test detection
+		// Loopback test detection (pre-allocated for zero-allocation on audio thread)
 		this._detectTest = false;
+		this._prevTail = new Int16Array(96);
+		this._scanBuffer = new Int16Array(96 + SAMPLES_PER_FRAME);
 
 		this.port.onmessage = (event) => {
 			if (event.data.type === 'init') {
@@ -44,6 +46,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this._prebuffering = true;
 			} else if (event.data.type === 'detect-test') {
 				this._detectTest = true;
+				this._prevTail.fill(0);
 			} else if (event.data.type === 'stop-detect-test') {
 				this._detectTest = false;
 			}
@@ -105,14 +108,15 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 			this._partialFrameCount++;
 		}
 
-		const firstChunk = Math.min(toRead, this._capacity - read);
+		const readPos = Atomics.load(this._pointers, 1);
+		const firstChunk = Math.min(toRead, this._capacity - readPos);
 
-		this._tempBuffer.set(this._data.subarray(read, read + firstChunk));
+		this._tempBuffer.set(this._data.subarray(readPos, readPos + firstChunk));
 		if (toRead > firstChunk) {
 			this._tempBuffer.set(this._data.subarray(0, toRead - firstChunk), firstChunk);
 		}
 
-		Atomics.store(this._pointers, 1, (read + toRead) % this._capacity);
+		Atomics.store(this._pointers, 1, (readPos + toRead) % this._capacity);
 
 		// Convert Int16 [-32768, 32767] to Float32 [-1, 1]
 		const scale = 1.0 / 32768.0;
@@ -124,16 +128,37 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 			outChannel[i] = 0;
 		}
 
-		// Loopback test: check for 3-pulse pattern in received samples
-		if (this._detectTest && toRead >= 97) {
+		// Loopback test: scan for 3-pulse pattern at any offset,
+		// using a sliding window across frame boundaries so detection
+		// works regardless of ring buffer read alignment.
+		if (this._detectTest) {
 			const THRESHOLD = 30000; // near-max Int16
-			if (
-				this._tempBuffer[0] >= THRESHOLD &&
-				this._tempBuffer[48] >= THRESHOLD &&
-				this._tempBuffer[96] >= THRESHOLD
-			) {
-				this.port.postMessage({ type: 'test-detected' });
-				this._detectTest = false;
+
+			// Build search window: [previous tail (96) | current frame (toRead)]
+			this._scanBuffer.set(this._prevTail);
+			this._scanBuffer.set(this._tempBuffer.subarray(0, toRead), 96);
+			const scanLen = 96 + toRead;
+
+			for (let i = 0; i <= scanLen - 97; i++) {
+				if (
+					this._scanBuffer[i] >= THRESHOLD &&
+					this._scanBuffer[i + 48] >= THRESHOLD &&
+					this._scanBuffer[i + 96] >= THRESHOLD
+				) {
+					this.port.postMessage({ type: 'test-detected' });
+					this._detectTest = false;
+					break;
+				}
+			}
+
+			// Save tail for cross-frame detection on next callback
+			if (this._detectTest) {
+				if (toRead >= 96) {
+					this._prevTail.set(this._tempBuffer.subarray(toRead - 96, toRead));
+				} else {
+					this._prevTail.copyWithin(0, toRead);
+					this._prevTail.set(this._tempBuffer.subarray(0, toRead), 96 - toRead);
+				}
 			}
 		}
 
