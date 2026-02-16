@@ -13,7 +13,7 @@ const SAMPLES_PER_FRAME = 128;
 // Prebuffer: accumulate this many frames before starting playback.
 // Prevents phase-locked underruns where the read/write cadence aligns
 // such that every other quantum finds an empty buffer.
-const PREBUFFER_FRAMES = 1; // ~2.67ms at 48kHz
+const PREBUFFER_FRAMES = 0; // 0 = lowest latency (no prebuffer)
 const STATS_INTERVAL = 75; // ~200ms at 128 samples/frame @ 48kHz
 
 class PlaybackProcessor extends AudioWorkletProcessor {

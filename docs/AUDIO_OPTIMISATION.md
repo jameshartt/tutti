@@ -10,24 +10,24 @@ at 48kHz / 128 samples per frame (~2.67ms render quantum).
 Mic → Hardware input → AudioWorklet capture → Ring buffer → TransportBridge
     → Network (WebTransport datagram) → Server on_audio_received
     → [Mixer or direct forward] → Network → Client TransportBridge
-    → Ring buffer → AudioWorklet playback (prebuffer) → Hardware output → Speaker
+    → Ring buffer → AudioWorklet playback → Hardware output → Speaker
 ```
 
 ## Latency budget (localhost, 2 participants)
 
-| Component | Initial | After Round 1 | After Round 2 | Controllable? |
-|---|---|---|---|---|
-| Hardware input (`baseLatency`) | ~3ms | ~3ms | ~3ms | No (hardware) |
-| Capture quantum (avg sample age) | ~1.3ms | ~1.3ms | ~1.3ms | No (browser) |
-| Client capture ring buffer | ~170ms | ~21ms | ~21ms | Yes — reduced to 8 frames |
-| Capture drain | polling (~4ms) | event-driven (~0ms) | event-driven (~0ms) | Yes — worklet `postMessage` |
-| Network (localhost) | ~0.05ms | ~0.05ms | ~0.05ms | No |
-| Server mixer wait | ~2.67ms | ~1.3ms avg | **~0.02ms** | Yes — direct forwarding |
-| Server mix + send | ~0.5ms | ~0.5ms | ~0.02ms | Partially — bypass for 2p |
-| Network (localhost) | ~0.05ms | ~0.05ms | ~0.05ms | No |
-| Playback prebuffer | 0ms | 5.3ms (2 frames) | **2.67ms (1 frame)** | Yes |
-| Playback quantum wait | ~1.3ms | ~1.3ms | ~1.3ms | No (browser) |
-| Hardware output (`outputLatency`) | ~3ms | ~3ms | ~3ms | No (hardware) |
+| Component | Initial | After Round 1 | After Round 2 | After Round 3 | Controllable? |
+|---|---|---|---|---|---|
+| Hardware input (`baseLatency`) | ~3ms | ~3ms | ~3ms | ~3ms | No (hardware) |
+| Capture quantum (avg sample age) | ~1.3ms | ~1.3ms | ~1.3ms | ~1.3ms | No (browser) |
+| Client capture ring buffer | ~170ms | ~0ms | ~0ms | ~0ms | Yes — event-driven drain (8-frame capacity is jitter headroom only) |
+| Capture drain | polling (~4ms) | event-driven (~0ms) | event-driven (~0ms) | event-driven (~0ms) | Yes — worklet `postMessage` |
+| Network (localhost) | ~0.05ms | ~0.05ms | ~0.05ms | ~0.05ms | No |
+| Server mixer wait | ~2.67ms | ~1.3ms avg | ~0.02ms | ~0.02ms | Yes — direct forwarding |
+| Server mix + send | ~0.5ms | ~0.5ms | ~0.02ms | ~0.02ms | Partially — bypass for 2p |
+| Network (localhost) | ~0.05ms | ~0.05ms | ~0.05ms | ~0.05ms | No |
+| Playback prebuffer | 0ms | 5.3ms (2 frames) | 2.67ms (1 frame) | **0ms** | Yes — eliminated |
+| Playback quantum wait | ~1.3ms | ~1.3ms | ~1.3ms | ~1.3ms | No (browser) |
+| Hardware output (`outputLatency`) | ~3ms | ~3ms | ~3ms | ~3ms | No (hardware) |
 
 **Headline numbers (2 participants, localhost, default audio device):**
 
@@ -35,8 +35,9 @@ Mic → Hardware input → AudioWorklet capture → Ring buffer → TransportBri
 |---|---|---|
 | Before optimisation | ~40ms+ | ~14m |
 | After Round 1 | ~15.8ms | ~5.4m |
-| After Round 2 | **~11.3ms** | **~3.9m** |
-| With low-latency USB interface | **~6ms** | **~2.1m** |
+| After Round 2 | ~11.3ms | ~3.9m |
+| After Round 3 | **~8.6ms** | **~3.0m** |
+| With low-latency USB interface | **~3.6ms** | **~1.2m** |
 
 ## Round 1 changes
 
@@ -97,6 +98,24 @@ Commit: `6d81577`
    sufficient cushion against timing drift. This removes 2.67ms of permanent
    pipeline latency.
 
+## Round 3 changes
+
+1. **Eliminate playback prebuffer** (client): `PREBUFFER_FRAMES` reduced from 1 to 0
+   (2.67ms → 0ms). The prebuffer was originally added to prevent phase-locked
+   underruns, but with the direct forwarding fast path and event-driven capture
+   drain, packet arrival timing is stable enough that no prebuffer is needed.
+
+   The skip-ahead logic on startup still runs — it discards any data that
+   accumulated while the worklet was initialising, keeping only 1 frame for
+   immediate output. This prevents startup buffer accumulation without adding
+   permanent pipeline latency.
+
+   On localhost this saves 2.67ms, bringing the total to the hard floor (~8.6ms
+   on default audio devices, ~3.6ms with a low-latency USB interface).
+
+   If underruns occur on higher-jitter networks, `PREBUFFER_FRAMES` can be
+   increased back to 1 (LAN) or 2 (WAN).
+
 ## Hard floor (~6–8ms)
 
 The following components cannot be reduced without changes outside our control:
@@ -110,13 +129,30 @@ The following components cannot be reduced without changes outside our control:
 
 **Total hard floor: ~8.6ms** (default device) / **~3.6ms** (low-latency USB interface)
 
+## Remaining budget analysis
+
+After Round 3, the pipeline is at the architectural hard floor on localhost. All
+controllable software components contribute <0.5ms combined:
+
+| Component | Current | Minimum | Notes |
+|---|---|---|---|
+| Capture postMessage delay | ~0.3ms | ~0.1ms | Could use `Atomics.waitAsync` but browser support is limited |
+| Serialise/deserialise | ~0.1ms | ~0.05ms | Pre-allocate send buffers (blocked by async transport ownership) |
+| Server 2p fast-path mutex | ~0.02ms | ~0ms | Store gains as atomics instead of mutex-guarded map |
+
+**No further software-side latency reductions are meaningful on localhost.**
+The remaining ~8.6ms is entirely hardware I/O + Web Audio quantum overhead.
+Real-network deployments will add RTT/2 + jitter buffer; the focus shifts
+to quality (Opus, jitter buffer, FEC) rather than raw latency.
+
 ## Future improvement opportunities
 
 ### Achievable within the current architecture
 
-- **Adaptive prebuffer**: Dynamically adjust `PREBUFFER_FRAMES` based on observed
-  jitter. Use 0 frames on localhost (where jitter is negligible), 1 for LAN, 2+
-  for WAN. Could be driven by a rolling jitter estimate from packet timestamps.
+- **Adaptive prebuffer**: Currently hardcoded to 0 frames for lowest latency.
+  For real networks with jitter, dynamically adjust `PREBUFFER_FRAMES` based on
+  observed jitter (0 for localhost, 1 for LAN, 2+ for WAN). Could be driven by
+  a rolling jitter estimate from packet arrival timestamps.
 
 - **Opus compression**: Currently sending raw PCM (256 bytes/frame). Opus at
   48kHz/128 samples can compress to ~40–80 bytes, reducing network transit time on

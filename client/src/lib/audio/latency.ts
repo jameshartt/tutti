@@ -55,7 +55,7 @@ export function computeLatencyBreakdown(
 		hardwareInputMs: hw.inputMs,
 		hardwareOutputMs: hw.outputMs,
 		captureBufferMs: QUANTUM_MS,
-		playbackBufferMs: QUANTUM_MS,
+		playbackBufferMs: 0,
 		networkOneWayMs: networkRttMs / 2,
 		serverProcessingMs,
 		fudgeFactorMs,
