@@ -65,6 +65,7 @@ tutti-server [options]
   --ws-port <port>         WebSocket signaling port (default: 8081)
   --wt-port <port>         WebTransport port (default: 4433)
   --max-participants <n>   Max per room (default: 4)
+  --hostname <name>        Public hostname for URLs (default: localhost)
   --cert <path>            TLS cert (default: certs/cert.pem)
   --key <path>             TLS key (default: certs/key.pem)
 ```
@@ -103,6 +104,10 @@ tutti/
 │       └── routes/               # SvelteKit pages
 ├── shared/protocol.md            # Binary protocol spec
 ├── dev.sh                        # Build + run script
+├── deploy.sh                     # Production provisioning script
+├── docker-compose.yml            # Docker Compose stack
+├── Caddyfile                     # Caddy reverse proxy config
+├── DEPLOY.md                     # Production deployment guide
 └── docs/
     ├── PLAN.md                   # Full design document
     └── PROGRESS.md               # Implementation status
@@ -132,6 +137,10 @@ cd server
 cmake -B build -DTUTTI_ENABLE_WEBTRANSPORT=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j$(nproc)
 ```
+
+## Deployment
+
+See [DEPLOY.md](DEPLOY.md) for production deployment instructions (Docker, TLS, SSH hardening, fail2ban).
 
 ## Tests
 
