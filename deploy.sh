@@ -215,6 +215,16 @@ info "Building images..."
 docker compose build
 info "Restarting containers..."
 docker compose down --remove-orphans 2>/dev/null || true
+
+# Stop any stray containers (from previous project names) still holding our ports
+for port in 80 443; do
+    blocking=$(docker ps -q --filter "publish=$port" 2>/dev/null)
+    if [[ -n "$blocking" ]]; then
+        warn "Stopping containers blocking port $port..."
+        echo "$blocking" | xargs docker stop 2>/dev/null || true
+    fi
+done
+
 docker compose up -d
 
 ok "Containers launched"
