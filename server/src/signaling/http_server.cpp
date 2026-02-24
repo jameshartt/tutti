@@ -14,8 +14,12 @@
 
 namespace tutti {
 
-HttpServer::HttpServer(std::shared_ptr<RoomManager> room_manager)
-    : room_manager_(std::move(room_manager)) {}
+HttpServer::HttpServer(std::shared_ptr<RoomManager> room_manager,
+                       const std::string& hostname,
+                       uint16_t wt_port)
+    : room_manager_(std::move(room_manager))
+    , hostname_(hostname)
+    , wt_port_(wt_port) {}
 
 HttpServer::~HttpServer() { stop(); }
 
@@ -137,10 +141,14 @@ HttpServer::HttpResponse HttpServer::route(const HttpRequest& req) {
         return handle_list_rooms();
     }
 
+    if (req.method == "GET" && req.path == "/api/health") {
+        return {200, "application/json", R"({"status":"ok"})"};
+    }
+
     if (req.method == "GET" && req.path == "/api/transport") {
         nlohmann::json resp;
-        resp["wt_url"] = "https://localhost:4433/wt";
-        resp["ws_url"] = "ws://localhost:8081";
+        resp["wt_url"] = "https://" + hostname_ + ":" + std::to_string(wt_port_) + "/wt";
+        resp["ws_url"] = "wss://" + hostname_ + "/ws";
         if (!cert_hash_.empty()) {
             resp["cert_hash"] = cert_hash_;
         }
@@ -210,8 +218,8 @@ HttpServer::HttpResponse HttpServer::handle_join_room(
         case RoomManager::JoinResult::Success: {
             nlohmann::json resp = {
                 {"participant_id", participant_id},
-                {"wt_url", "https://localhost:4433/wt"},
-                {"ws_url", "wss://localhost:4433/ws"}
+                {"wt_url", "https://" + hostname_ + ":" + std::to_string(wt_port_) + "/wt"},
+                {"ws_url", "wss://" + hostname_ + "/ws"}
             };
             return {200, "application/json", resp.dump()};
         }

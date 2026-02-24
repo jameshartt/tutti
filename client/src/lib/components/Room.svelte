@@ -74,22 +74,19 @@
 			capture = await startCapture();
 			playback = await startPlayback();
 
-			// Fetch transport config (cert hash for WebTransport with self-signed certs)
+			// Fetch transport config from server (URLs + optional cert hash)
 			let certHash: string | undefined;
+			const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			let wtUrl = `https://${window.location.hostname}:4433/wt`;
+			let wsUrl = `${wsProtocol}//${window.location.host}/ws`;
 			try {
 				const transportInfo = await fetch('/api/transport').then(r => r.json());
 				certHash = transportInfo.cert_hash;
+				if (transportInfo.wt_url) wtUrl = transportInfo.wt_url;
+				if (transportInfo.ws_url) wsUrl = transportInfo.ws_url;
 			} catch {
-				// Server may not have /api/transport — continue without cert hash
+				// Server may not have /api/transport — use defaults
 			}
-
-			// Determine URLs
-			const wtUrl = `https://${window.location.hostname}:4433/wt`;
-			const isDev = window.location.port === '3000';
-			const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-			const wsUrl = isDev
-				? `${wsProtocol}//${window.location.host}/ws`
-				: `${wsProtocol}//${window.location.hostname}:8081`;
 
 			// Helper: wire up a transport, connect, bind, and start bridge
 			const wireTransport = async (

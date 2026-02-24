@@ -1,0 +1,17 @@
+{$DOMAIN:localhost} {
+	# WebSocket signaling (for WebRTC fallback) — must be matched before reverse_proxy
+	@websocket {
+		path /ws
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	reverse_proxy @websocket server:8081
+
+	# C++ server HTTP API
+	handle_path /api/* {
+		reverse_proxy server:8080
+	}
+
+	# SvelteKit client (default route)
+	reverse_proxy client:3000
+}

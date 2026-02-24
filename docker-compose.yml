@@ -1,0 +1,48 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    depends_on:
+      - client
+      - server
+    restart: unless-stopped
+
+  server:
+    build: ./server
+    ports:
+      - "4433:4433/udp"
+    expose:
+      - "8080"
+      - "8081"
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      memlock: -1
+    volumes:
+      - caddy_data:/certs:ro
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - WT_PORT=${WT_PORT:-4433}
+    restart: unless-stopped
+
+  client:
+    build: ./client
+    expose:
+      - "3000"
+    environment:
+      - ORIGIN=${ORIGIN:-https://localhost}
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

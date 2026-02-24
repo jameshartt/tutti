@@ -46,6 +46,7 @@ int main(int argc, char* argv[]) {
     uint16_t ws_port = 8081;
     uint16_t wt_port = 4433;
     size_t max_participants = 4;
+    std::string hostname = "localhost";
     std::string cert_file = "certs/cert.pem";
     std::string key_file = "certs/key.pem";
 
@@ -61,6 +62,8 @@ int main(int argc, char* argv[]) {
             wt_port = static_cast<uint16_t>(std::stoi(argv[++i]));
         } else if (arg == "--max-participants" && i + 1 < argc) {
             max_participants = static_cast<size_t>(std::stoi(argv[++i]));
+        } else if (arg == "--hostname" && i + 1 < argc) {
+            hostname = argv[++i];
         } else if (arg == "--cert" && i + 1 < argc) {
             cert_file = argv[++i];
         } else if (arg == "--key" && i + 1 < argc) {
@@ -74,6 +77,7 @@ int main(int argc, char* argv[]) {
                       << "  --ws-port <port>         WebSocket signaling port (default: 8081)\n"
                       << "  --wt-port <port>         WebTransport port (default: 4433)\n"
                       << "  --max-participants <n>   Max participants per room (default: 4)\n"
+                      << "  --hostname <name>        Public hostname for URLs (default: localhost)\n"
                       << "  --cert <path>            TLS certificate file (default: certs/cert.pem)\n"
                       << "  --key <path>             TLS private key file (default: certs/key.pem)\n"
                       << "  --help                   Show this help\n";
@@ -102,7 +106,7 @@ int main(int argc, char* argv[]) {
     auto binder_callbacks = session_binder->make_callbacks();
 
     // Start HTTP API server
-    auto http_server = std::make_unique<tutti::HttpServer>(room_manager);
+    auto http_server = std::make_unique<tutti::HttpServer>(room_manager, hostname, wt_port);
 
     // Load cert hash for WebTransport (from hash.txt alongside cert)
     {

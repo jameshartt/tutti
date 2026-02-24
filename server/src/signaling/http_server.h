@@ -14,14 +14,18 @@ namespace tutti {
 /// Handles room listing, joining, leaving, claiming, and vacate requests.
 ///
 /// Routes:
+///   GET  /api/health             - Health check
 ///   GET  /api/rooms              - List all rooms
+///   GET  /api/transport          - Transport connection info
 ///   POST /api/rooms/:name/join   - Join a room
 ///   POST /api/rooms/:name/leave  - Leave a room
 ///   POST /api/rooms/:name/claim  - Claim a room (set password)
 ///   POST /api/rooms/:name/vacate-request - Request occupants to vacate
 class HttpServer {
 public:
-    explicit HttpServer(std::shared_ptr<RoomManager> room_manager);
+    HttpServer(std::shared_ptr<RoomManager> room_manager,
+               const std::string& hostname = "localhost",
+               uint16_t wt_port = 4433);
     ~HttpServer();
 
     /// Set the TLS certificate hash (base64-encoded SHA-256) for WebTransport
@@ -63,6 +67,8 @@ private:
                                        const std::string& remote_ip);
 
     std::shared_ptr<RoomManager> room_manager_;
+    std::string hostname_;
+    uint16_t wt_port_;
     std::string cert_hash_;
     int server_fd_ = -1;
     std::thread accept_thread_;
