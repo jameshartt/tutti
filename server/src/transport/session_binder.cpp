@@ -42,17 +42,34 @@ void SessionBinder::on_message(TransportSession* session,
         std::lock_guard<std::mutex> lock(bindings_mutex_);
         auto it = bindings_.find(sid);
         if (it != bindings_.end()) {
-            // Echo ping messages back as pong for RTT measurement
-            if (message.find("\"ping\"") != std::string::npos) {
-                nlohmann::json msg;
-                try {
-                    msg = nlohmann::json::parse(message);
-                } catch (...) {
-                    return;
+            nlohmann::json msg;
+            try {
+                msg = nlohmann::json::parse(message);
+            } catch (...) {
+                return;
+            }
+
+            auto type = msg.value("type", "");
+            if (type == "ping") {
+                msg["type"] = "pong";
+                it->second.session->send_reliable(msg.dump());
+            } else if (type == "gain") {
+                auto source_id = msg.value("participant_id", "");
+                float gain = msg.value("value", 1.0f);
+                if (!source_id.empty()) {
+                    auto room = room_manager_->get_room(it->second.room_name);
+                    if (room) {
+                        room->set_gain(it->second.participant_id, source_id, gain);
+                    }
                 }
-                if (msg.value("type", "") == "ping") {
-                    msg["type"] = "pong";
-                    it->second.session->send_reliable(msg.dump());
+            } else if (type == "mute") {
+                auto source_id = msg.value("participant_id", "");
+                bool muted = msg.value("muted", false);
+                if (!source_id.empty()) {
+                    auto room = room_manager_->get_room(it->second.room_name);
+                    if (room) {
+                        room->set_mute(it->second.participant_id, source_id, muted);
+                    }
                 }
             }
             return;
