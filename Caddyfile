@@ -8,7 +8,7 @@
 	reverse_proxy @websocket server:8081
 
 	# C++ server HTTP API
-	handle_path /api/* {
+	handle /api/* {
 		reverse_proxy server:8080
 	}
 
