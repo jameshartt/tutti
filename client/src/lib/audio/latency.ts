@@ -47,7 +47,8 @@ export function computeLatencyInfo(totalMs: number): LatencyInfo {
 export function computeLatencyBreakdown(
 	networkRttMs: number,
 	serverProcessingMs: number,
-	fudgeFactorMs: number = 0
+	fudgeFactorMs: number = 0,
+	prebufferFrames: number = 0
 ): LatencyBreakdown {
 	const hw = getHardwareLatency();
 
@@ -55,7 +56,7 @@ export function computeLatencyBreakdown(
 		hardwareInputMs: hw.inputMs,
 		hardwareOutputMs: hw.outputMs,
 		captureBufferMs: QUANTUM_MS,
-		playbackBufferMs: 0,
+		playbackBufferMs: (SAMPLES_PER_FRAME * prebufferFrames / SAMPLE_RATE) * 1000,
 		networkOneWayMs: networkRttMs / 2,
 		serverProcessingMs,
 		fudgeFactorMs,

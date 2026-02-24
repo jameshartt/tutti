@@ -23,7 +23,8 @@ export const latencyBreakdown = derived(
 		const breakdown = computeLatencyBreakdown(
 			$stats.networkRTT,
 			SERVER_PROCESSING_MS,
-			$settings.fudgeFactorMs
+			$settings.fudgeFactorMs,
+			$settings.prebufferFrames
 		);
 
 		const info = computeLatencyInfo(breakdown.totalMs);
