@@ -26,6 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=build /src/build/tutti-server .
+COPY --from=build /src/build/_deps/libdatachannel-build/libdatachannel.so.0.24.1 /usr/local/lib/
+COPY --from=build /src/build/_deps/libwtf-build/output/libwtf.so.0.0.0 /usr/local/lib/
+COPY --from=build /src/build/_deps/libwtf-build/output/libmsquic.so.2.4.14 /usr/local/lib/
+RUN cd /usr/local/lib && \
+    ln -sf libdatachannel.so.0.24.1 libdatachannel.so.0.24 && \
+    ln -sf libdatachannel.so.0.24.1 libdatachannel.so && \
+    ln -sf libwtf.so.0.0.0 libwtf.so.0 && \
+    ln -sf libwtf.so.0.0.0 libwtf.so && \
+    ln -sf libmsquic.so.2.4.14 libmsquic.so.2 && \
+    ln -sf libmsquic.so.2.4.14 libmsquic.so && \
+    ldconfig
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 
