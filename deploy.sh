@@ -210,9 +210,12 @@ else
 fi
 
 # ── Launch ───────────────────────────────────────────────────────────────────
-info "Building and starting containers..."
 cd "$REPO_DIR"
-docker compose up -d --build
+info "Building images..."
+docker compose build
+info "Restarting containers..."
+docker compose down --remove-orphans 2>/dev/null || true
+docker compose up -d
 
 ok "Containers launched"
 
