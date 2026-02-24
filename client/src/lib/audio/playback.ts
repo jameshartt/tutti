@@ -20,6 +20,8 @@ export interface PlaybackHandle {
 	ringBufferSAB: SharedArrayBuffer;
 	/** MessagePort for receiving stats from the playback worklet */
 	playbackPort: MessagePort;
+	/** Send configuration to the playback worklet */
+	sendConfig: (config: { prebufferFrames: number }) => void;
 	/** Stop playback and release resources */
 	stop: () => void;
 }
@@ -70,6 +72,9 @@ export async function startPlayback(): Promise<PlaybackHandle> {
 	return {
 		ringBufferSAB,
 		playbackPort: workletNode.port,
+		sendConfig(config: { prebufferFrames: number }) {
+			workletNode.port.postMessage({ type: 'config', ...config });
+		},
 		stop() {
 			keepAlive.stop();
 			keepAlive.disconnect();

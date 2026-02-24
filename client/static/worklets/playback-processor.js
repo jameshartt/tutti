@@ -10,10 +10,6 @@
  */
 
 const SAMPLES_PER_FRAME = 128;
-// Prebuffer: accumulate this many frames before starting playback.
-// Prevents phase-locked underruns where the read/write cadence aligns
-// such that every other quantum finds an empty buffer.
-const PREBUFFER_FRAMES = 0; // 0 = lowest latency (no prebuffer)
 const STATS_INTERVAL = 75; // ~200ms at 128 samples/frame @ 48kHz
 
 class PlaybackProcessor extends AudioWorkletProcessor {
@@ -23,6 +19,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		this._data = null;
 		this._capacity = 0;
 		this._prebuffering = true;
+		this._prebufferFrames = 0;
 		this._tempBuffer = new Int16Array(SAMPLES_PER_FRAME);
 
 		// Diagnostics counters (lightweight integers, no allocations)
@@ -43,6 +40,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this._pointers = new Int32Array(sab, 0, 2);
 				this._data = new Int16Array(sab, 8);
 				this._capacity = this._data.length;
+				this._prebuffering = true;
+			} else if (event.data.type === 'config') {
+				this._prebufferFrames = event.data.prebufferFrames;
 				this._prebuffering = true;
 			} else if (event.data.type === 'detect-test') {
 				this._detectTest = true;
@@ -71,7 +71,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		// Prebuffer: wait until enough data accumulates before starting
 		// playback, so we have a cushion against timing jitter.
 		if (this._prebuffering) {
-			if (available < SAMPLES_PER_FRAME * PREBUFFER_FRAMES) {
+			if (available < SAMPLES_PER_FRAME * this._prebufferFrames) {
 				outChannel.fill(0);
 				this._reportStats();
 				return true;
@@ -80,9 +80,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
 			// Skip-ahead: during startup, data may have accumulated while
 			// waiting for the first process() call. Advance the read pointer
-			// to keep only 1 frame of cushion, discarding stale samples that
-			// would otherwise add permanent buffer latency.
-			const targetFill = SAMPLES_PER_FRAME;
+			// to keep only the configured cushion, discarding stale samples
+			// that would otherwise add permanent buffer latency.
+			const targetFill = SAMPLES_PER_FRAME * Math.max(1, this._prebufferFrames);
 			if (available > targetFill) {
 				const skip = available - targetFill;
 				Atomics.store(this._pointers, 1, (read + skip) % this._capacity);

@@ -27,6 +27,7 @@
 	let currentBreakdown: LatencyBreakdown | null = $state(null);
 	let currentLatencyInfo: LatencyInfo | null = $state(null);
 	let nerdMode = $state(false);
+	let prebufferFrames = $state(0);
 
 	let capture: CaptureHandle | null = null;
 	let playback: PlaybackHandle | null = null;
@@ -50,6 +51,11 @@
 
 	settings.subscribe((s) => {
 		nerdMode = s.nerdMode;
+		const newPrebuffer = s.prebufferFrames;
+		if (newPrebuffer !== prebufferFrames) {
+			prebufferFrames = newPrebuffer;
+			playback?.sendConfig({ prebufferFrames: newPrebuffer });
+		}
 	});
 
 	latencyBreakdown.subscribe((lb) => {
@@ -73,6 +79,7 @@
 			// Start capture and playback first (these work independently)
 			capture = await startCapture();
 			playback = await startPlayback();
+			playback.sendConfig({ prebufferFrames });
 
 			// Fetch transport config from server (URLs + optional cert hash)
 			let certHash: string | undefined;

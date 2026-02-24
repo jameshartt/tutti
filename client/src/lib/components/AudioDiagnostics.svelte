@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { audioStats, type AudioStats } from '../stores/audio-stats.js';
 	import { getLatencyWarning } from '../audio/context.js';
+	import { settings } from '../stores/settings.js';
 
 	let { transportDesc, transportConnected }: { transportDesc: string; transportConnected: boolean } =
 		$props();
@@ -53,6 +54,20 @@
 	function sampleRateWarning(rate: number): boolean {
 		return rate > 0 && rate !== 48000;
 	}
+
+	let prebufferFrames = $state(0);
+	settings.subscribe((s) => (prebufferFrames = s.prebufferFrames));
+
+	const prebufferPresets = [
+		{ label: 'None', value: 0, hint: '0ms' },
+		{ label: 'Low', value: 2, hint: '~5ms' },
+		{ label: 'Medium', value: 4, hint: '~11ms' },
+		{ label: 'High', value: 8, hint: '~21ms' }
+	] as const;
+
+	function setPrebuffer(value: number) {
+		settings.update((s) => ({ ...s, prebufferFrames: value }));
+	}
 </script>
 
 <div class="diagnostics">
@@ -86,6 +101,21 @@
 			<span>Partial: {stats.playbackPartialFrames}</span>
 			{#if stats.playbackPrebuffering}<span class="warn">PREBUFFERING</span>{/if}
 		</div>
+		<div class="prebuffer-row">
+			<span class="label">Pre-buffer</span>
+			<div class="preset-group">
+				{#each prebufferPresets as preset}
+					<button
+						class="preset-btn"
+						class:active={prebufferFrames === preset.value}
+						onclick={() => setPrebuffer(preset.value)}
+					>
+						{preset.label}<span class="preset-hint">{preset.hint}</span>
+					</button>
+				{/each}
+			</div>
+		</div>
+		<p class="prebuffer-hint">Seeing underruns? Increase the pre-buffer. This adds latency but improves stability.</p>
 		<div class="buffer-row">
 			<span class="label">Capture</span>
 			<div class="bar-container">
@@ -207,6 +237,71 @@
 		padding-left: 60px;
 		font-size: 0.65rem;
 		color: #888;
+	}
+
+	.prebuffer-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.35rem;
+		margin-bottom: 0.15rem;
+	}
+
+	.prebuffer-row .label {
+		width: 60px;
+		flex-shrink: 0;
+	}
+
+	.preset-group {
+		display: flex;
+		gap: 0;
+	}
+
+	.preset-btn {
+		padding: 2px 8px;
+		border: 1px solid #555;
+		background: transparent;
+		color: #888;
+		cursor: pointer;
+		font-size: 0.62rem;
+		font-family: monospace;
+		line-height: 1.4;
+	}
+
+	.preset-btn:first-child {
+		border-radius: 4px 0 0 4px;
+	}
+
+	.preset-btn:last-child {
+		border-radius: 0 4px 4px 0;
+	}
+
+	.preset-btn + .preset-btn {
+		border-left: none;
+	}
+
+	.preset-btn.active {
+		background: #4ade8030;
+		color: #4ade80;
+		border-color: #4ade80;
+	}
+
+	.preset-btn.active + .preset-btn {
+		border-left-color: #4ade80;
+	}
+
+	.preset-hint {
+		margin-left: 3px;
+		opacity: 0.6;
+		font-size: 0.58rem;
+	}
+
+	.prebuffer-hint {
+		margin: 0 0 0.25rem;
+		padding-left: 60px;
+		font-size: 0.6rem;
+		color: #666;
+		line-height: 1.3;
 	}
 
 	table {

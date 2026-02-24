@@ -10,15 +10,16 @@
  */
 
 const SAMPLES_PER_FRAME = 128;
-// Prebuffer: accumulate this many frames before starting playback.
-// Prevents phase-locked underruns where the read/write cadence aligns
-// such that every other quantum finds an empty buffer.
-const PREBUFFER_FRAMES = 0; // 0 = lowest latency (no prebuffer)
 const STATS_INTERVAL = 75; // ~200ms at 128 samples/frame @ 48kHz
 
 interface InitMessage {
 	type: 'init';
 	ringBufferSAB: SharedArrayBuffer;
+}
+
+interface ConfigMessage {
+	type: 'config';
+	prebufferFrames: number;
 }
 
 interface DetectTestMessage {
@@ -34,6 +35,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 	private data: Int16Array | null = null;
 	private capacity = 0;
 	private prebuffering = true;
+	private prebufferFrames = 0;
 	private tempBuffer = new Int16Array(SAMPLES_PER_FRAME);
 
 	// Diagnostics counters (lightweight integers, no allocations)
@@ -51,9 +53,12 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 	constructor() {
 		super();
 		this.port.onmessage = (event: MessageEvent) => {
-			const msg = event.data as InitMessage | DetectTestMessage | StopDetectTestMessage;
+			const msg = event.data as InitMessage | ConfigMessage | DetectTestMessage | StopDetectTestMessage;
 			if (msg.type === 'init') {
 				this.initRingBuffer((msg as InitMessage).ringBufferSAB);
+			} else if (msg.type === 'config') {
+				this.prebufferFrames = (msg as ConfigMessage).prebufferFrames;
+				this.prebuffering = true;
 			} else if (msg.type === 'detect-test') {
 				this.detectTest = true;
 				this.prevTail.fill(0);
@@ -88,7 +93,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		// Prebuffer: wait until enough data accumulates before starting
 		// playback, so we have a cushion against timing jitter.
 		if (this.prebuffering) {
-			if (available < SAMPLES_PER_FRAME * PREBUFFER_FRAMES) {
+			if (available < SAMPLES_PER_FRAME * this.prebufferFrames) {
 				outChannel.fill(0);
 				this.reportStats();
 				return true;
@@ -97,9 +102,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
 			// Skip-ahead: during startup, data may have accumulated while
 			// waiting for the first process() call. Advance the read pointer
-			// to keep only 1 frame of cushion, discarding stale samples that
-			// would otherwise add permanent buffer latency.
-			const targetFill = SAMPLES_PER_FRAME;
+			// to keep only the configured cushion, discarding stale samples
+			// that would otherwise add permanent buffer latency.
+			const targetFill = SAMPLES_PER_FRAME * Math.max(1, this.prebufferFrames);
 			if (available > targetFill) {
 				const skip = available - targetFill;
 				Atomics.store(this.pointers!, 1, (read + skip) % this.capacity);

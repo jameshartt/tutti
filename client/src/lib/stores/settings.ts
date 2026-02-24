@@ -11,12 +11,15 @@ export interface Settings {
 	fudgeFactorMs: number;
 	/** User's display name */
 	alias: string;
+	/** Playback prebuffer frames (0 = no prebuffer, higher = more latency but fewer underruns) */
+	prebufferFrames: number;
 }
 
 const defaultSettings: Settings = {
 	nerdMode: false,
 	fudgeFactorMs: 0,
-	alias: ''
+	alias: '',
+	prebufferFrames: 0
 };
 
 function createSettingsStore() {
