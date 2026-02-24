@@ -5,7 +5,6 @@ server/build/
 client/node_modules/
 client/.svelte-kit/
 client/build/
-client/package-lock.json
 
 # Editor
 .vscode/
