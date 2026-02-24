@@ -221,7 +221,8 @@ info "Waiting for services to become healthy..."
 max_attempts=30
 attempt=0
 while [[ $attempt -lt $max_attempts ]]; do
-    if curl -sf --max-time 2 "http://localhost:80/api/health" >/dev/null 2>&1; then
+    server_ip=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(docker compose ps -q server)" 2>/dev/null)
+    if [[ -n "$server_ip" ]] && curl -sf --max-time 2 "http://${server_ip}:8080/api/health" >/dev/null 2>&1; then
         ok "Health check passed"
         break
     fi
