@@ -86,23 +86,51 @@ void HttpServer::stop() {
 }
 
 void HttpServer::handle_connection(int client_fd) {
+    std::string data;
     char buf[4096];
-    ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-    if (n <= 0) {
+
+    // Read until we have headers + full body
+    size_t content_length = 0;
+    size_t header_end = std::string::npos;
+
+    while (true) {
+        ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
+        if (n <= 0) break;
+        data.append(buf, n);
+
+        if (header_end == std::string::npos) {
+            header_end = data.find("\r\n\r\n");
+            if (header_end != std::string::npos) {
+                // Parse Content-Length from headers
+                auto cl_pos = data.find("Content-Length: ");
+                if (cl_pos == std::string::npos)
+                    cl_pos = data.find("content-length: ");
+                if (cl_pos != std::string::npos && cl_pos < header_end) {
+                    content_length = std::stoul(data.substr(cl_pos + 16));
+                }
+                header_end += 4; // skip past \r\n\r\n
+            }
+        }
+
+        if (header_end != std::string::npos &&
+            data.size() >= header_end + content_length) {
+            break;
+        }
+    }
+
+    if (data.empty()) {
         close(client_fd);
         return;
     }
-    buf[n] = '\0';
 
     // Parse request line
     HttpRequest req;
-    std::istringstream stream(buf);
+    std::istringstream stream(data);
     stream >> req.method >> req.path;
 
-    // Extract body (after double newline)
-    const char* body_start = strstr(buf, "\r\n\r\n");
-    if (body_start) {
-        req.body = body_start + 4;
+    // Extract body
+    if (header_end != std::string::npos && header_end < data.size()) {
+        req.body = data.substr(header_end);
     }
 
     // Get remote IP
