@@ -29,6 +29,12 @@
 	let nerdMode = $state(false);
 	let prebufferFrames = $state(0);
 
+	// Self-channel state
+	let micMuted = $state(false);
+	let micBoost = $state(1.0);
+	let masterVolume = $state(1.0);
+	let inputLevel = $state(0);
+
 	let capture: CaptureHandle | null = null;
 	let playback: PlaybackHandle | null = null;
 	let bridge: TransportBridge | null = null;
@@ -198,6 +204,9 @@
 			capture.capturePort.onmessage = (event: MessageEvent) => {
 				if (event.data?.type === 'stats') {
 					updateCaptureStats(event.data);
+					if (event.data.peakLevel !== undefined) {
+						inputLevel = event.data.peakLevel;
+					}
 				} else if (originalHandler) {
 					originalHandler.call(capture!.capturePort, event);
 				}
@@ -293,6 +302,21 @@
 		);
 	}
 
+	function handleMicMute(muted: boolean) {
+		micMuted = muted;
+		bridge?.setMicMuted(muted);
+	}
+
+	function handleMicBoost(gain: number) {
+		micBoost = gain;
+		capture?.capturePort.postMessage({ type: 'input-gain', gain });
+	}
+
+	function handleMasterVolume(gain: number) {
+		masterVolume = gain;
+		playback?.playbackPort.postMessage({ type: 'volume', gain });
+	}
+
 	async function handleLeave() {
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		rttMonitor?.stop();
@@ -353,7 +377,18 @@
 			</div>
 		{/if}
 
-		<Mixer {participants} onGainChange={handleGainChange} onMuteToggle={handleMuteToggle} />
+		<Mixer
+			{participants}
+			onGainChange={handleGainChange}
+			onMuteToggle={handleMuteToggle}
+			{inputLevel}
+			{micMuted}
+			{micBoost}
+			{masterVolume}
+			onMicMuteToggle={handleMicMute}
+			onMicBoostChange={handleMicBoost}
+			onMasterVolumeChange={handleMasterVolume}
+		/>
 
 		{#if nerdMode}
 			<LatencyDisplay latency={currentLatencyInfo} breakdown={currentBreakdown} />

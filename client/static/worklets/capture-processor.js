@@ -25,6 +25,10 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		this._totalFrames = 0;
 		this._currentFillLevel = 0;
 		this._statsFrameCounter = 0;
+		this._peakLevel = 0;
+
+		// Input gain (mic boost): 1.0 = unity, up to 4.0 = +12dB
+		this._inputGain = 1.0;
 
 		// Loopback test injection
 		this._injectTest = false;
@@ -37,6 +41,8 @@ class CaptureProcessor extends AudioWorkletProcessor {
 				this._capacity = this._data.length;
 			} else if (event.data.type === 'inject-test') {
 				this._injectTest = true;
+			} else if (event.data.type === 'input-gain') {
+				this._inputGain = event.data.gain;
 			}
 		};
 	}
@@ -50,9 +56,15 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		const samples = input[0];
 		this._totalFrames++;
 
-		// Convert Float32 [-1, 1] to Int16 [-32768, 32767]
+		// Track peak from raw input (pre-gain) for level meter
 		for (let i = 0; i < samples.length; i++) {
-			const s = samples[i];
+			const abs = samples[i] < 0 ? -samples[i] : samples[i];
+			if (abs > this._peakLevel) this._peakLevel = abs;
+		}
+
+		// Convert Float32 [-1, 1] to Int16 [-32768, 32767], applying input gain
+		for (let i = 0; i < samples.length; i++) {
+			const s = samples[i] * this._inputGain;
 			this._tempBuffer[i] = s >= 1.0 ? 32767 : s <= -1.0 ? -32768 : (s * 32767) | 0;
 		}
 
@@ -103,8 +115,10 @@ class CaptureProcessor extends AudioWorkletProcessor {
 				type: 'stats',
 				droppedFrames: this._droppedFrames,
 				totalFrames: this._totalFrames,
-				fillLevel: this._currentFillLevel
+				fillLevel: this._currentFillLevel,
+				peakLevel: this._peakLevel
 			});
+			this._peakLevel = 0;
 		}
 	}
 }

@@ -23,6 +23,11 @@ interface InjectTestMessage {
 	type: 'inject-test';
 }
 
+interface InputGainMessage {
+	type: 'input-gain';
+	gain: number;
+}
+
 class CaptureProcessor extends AudioWorkletProcessor {
 	private pointers: Int32Array | null = null;
 	private data: Int16Array | null = null;
@@ -34,6 +39,10 @@ class CaptureProcessor extends AudioWorkletProcessor {
 	private totalFrames = 0;
 	private currentFillLevel = 0;
 	private statsFrameCounter = 0;
+	private peakLevel = 0;
+
+	// Input gain (mic boost): 1.0 = unity, up to 4.0 = +12dB
+	private inputGain = 1.0;
 
 	// Loopback test injection
 	private injectTest = false;
@@ -41,11 +50,13 @@ class CaptureProcessor extends AudioWorkletProcessor {
 	constructor() {
 		super();
 		this.port.onmessage = (event: MessageEvent) => {
-			const msg = event.data as InitMessage | InjectTestMessage;
+			const msg = event.data as InitMessage | InjectTestMessage | InputGainMessage;
 			if (msg.type === 'init') {
 				this.initRingBuffer((msg as InitMessage).ringBufferSAB);
 			} else if (msg.type === 'inject-test') {
 				this.injectTest = true;
+			} else if (msg.type === 'input-gain') {
+				this.inputGain = (msg as InputGainMessage).gain;
 			}
 		};
 	}
@@ -66,10 +77,15 @@ class CaptureProcessor extends AudioWorkletProcessor {
 		const samples = input[0]; // Mono channel 0
 		this.totalFrames++;
 
-		// Convert Float32 [-1, 1] to Int16 [-32768, 32767]
+		// Track peak from raw input (pre-gain) for level meter
 		for (let i = 0; i < samples.length; i++) {
-			const s = samples[i];
-			// Clamp and convert
+			const abs = samples[i] < 0 ? -samples[i] : samples[i];
+			if (abs > this.peakLevel) this.peakLevel = abs;
+		}
+
+		// Convert Float32 [-1, 1] to Int16 [-32768, 32767], applying input gain
+		for (let i = 0; i < samples.length; i++) {
+			const s = samples[i] * this.inputGain;
 			this.tempBuffer[i] = s >= 1.0 ? 32767 : s <= -1.0 ? -32768 : (s * 32767) | 0;
 		}
 
@@ -121,8 +137,10 @@ class CaptureProcessor extends AudioWorkletProcessor {
 				type: 'stats',
 				droppedFrames: this.droppedFrames,
 				totalFrames: this.totalFrames,
-				fillLevel: this.currentFillLevel
+				fillLevel: this.currentFillLevel,
+				peakLevel: this.peakLevel
 			});
+			this.peakLevel = 0;
 		}
 	}
 }

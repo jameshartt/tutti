@@ -30,6 +30,11 @@ interface StopDetectTestMessage {
 	type: 'stop-detect-test';
 }
 
+interface VolumeMessage {
+	type: 'volume';
+	gain: number;
+}
+
 class PlaybackProcessor extends AudioWorkletProcessor {
 	private pointers: Int32Array | null = null;
 	private data: Int16Array | null = null;
@@ -45,6 +50,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 	private currentFillLevel = 0;
 	private statsFrameCounter = 0;
 
+	// Master output gain
+	private masterGain = 1.0;
+
 	// Loopback test detection (pre-allocated for zero-allocation on audio thread)
 	private detectTest = false;
 	private prevTail = new Int16Array(96); // last 96 samples of previous frame
@@ -53,7 +61,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 	constructor() {
 		super();
 		this.port.onmessage = (event: MessageEvent) => {
-			const msg = event.data as InitMessage | ConfigMessage | DetectTestMessage | StopDetectTestMessage;
+			const msg = event.data as InitMessage | ConfigMessage | DetectTestMessage | StopDetectTestMessage | VolumeMessage;
 			if (msg.type === 'init') {
 				this.initRingBuffer((msg as InitMessage).ringBufferSAB);
 			} else if (msg.type === 'config') {
@@ -64,6 +72,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this.prevTail.fill(0);
 			} else if (msg.type === 'stop-detect-test') {
 				this.detectTest = false;
+			} else if (msg.type === 'volume') {
+				this.masterGain = (msg as VolumeMessage).gain;
 			}
 		};
 	}
@@ -141,8 +151,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
 		Atomics.store(this.pointers, 1, (readPos + toRead) % this.capacity);
 
-		// Convert Int16 [-32768, 32767] to Float32 [-1, 1]
-		const scale = 1.0 / 32768.0;
+		// Convert Int16 [-32768, 32767] to Float32 [-1, 1], applying master gain
+		const scale = (1.0 / 32768.0) * this.masterGain;
 		for (let i = 0; i < toRead; i++) {
 			outChannel[i] = this.tempBuffer[i] * scale;
 		}

@@ -43,6 +43,7 @@ export class TransportBridge {
 	private sendTimestamp = 0;
 	private incomingCount = 0;
 	private loopbackEnabled = false;
+	private micMuted = false;
 
 	// Pre-allocated buffers for zero-allocation on hot path
 	private readBuffer = new Int16Array(SAMPLES_PER_FRAME);
@@ -91,6 +92,11 @@ export class TransportBridge {
 		}
 	}
 
+	/** Mute/unmute mic (still drains buffer, but skips sending) */
+	setMicMuted(muted: boolean): void {
+		this.micMuted = muted;
+	}
+
 	/** Enable/disable local loopback (for pipeline latency testing) */
 	setLoopback(enabled: boolean): void {
 		this.loopbackEnabled = enabled;
@@ -110,17 +116,22 @@ export class TransportBridge {
 			const read = this.captureReader.read(this.readBuffer);
 			if (read < SAMPLES_PER_FRAME) break;
 
-			const packet: AudioPacket = {
-				sequence: this.sendSequence++,
-				timestamp: this.sendTimestamp,
-				samples: this.readBuffer
-			};
-			this.sendTimestamp += SAMPLES_PER_FRAME;
+			// When muted, still drain the buffer but don't send over network
+			if (!this.micMuted) {
+				const packet: AudioPacket = {
+					sequence: this.sendSequence++,
+					timestamp: this.sendTimestamp,
+					samples: this.readBuffer
+				};
+				this.sendTimestamp += SAMPLES_PER_FRAME;
 
-			// serializePacket returns a fresh Uint8Array each call —
-			// required because datagramWriter.write() is async and may
-			// hold the reference until the QUIC stack copies the data.
-			this.transport.sendDatagram(serializePacket(packet));
+				// serializePacket returns a fresh Uint8Array each call —
+				// required because datagramWriter.write() is async and may
+				// hold the reference until the QUIC stack copies the data.
+				this.transport.sendDatagram(serializePacket(packet));
+			} else {
+				this.sendTimestamp += SAMPLES_PER_FRAME;
+			}
 
 			// Local loopback: write captured frame back to playback buffer
 			// so the pipeline latency test can detect it without needing

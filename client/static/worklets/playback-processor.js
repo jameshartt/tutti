@@ -29,6 +29,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		this._currentFillLevel = 0;
 		this._statsFrameCounter = 0;
 
+		// Master output gain
+		this._masterGain = 1.0;
+
 		// Loopback test detection (pre-allocated for zero-allocation on audio thread)
 		this._detectTest = false;
 		this._prevTail = new Int16Array(96);
@@ -49,6 +52,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				this._prevTail.fill(0);
 			} else if (event.data.type === 'stop-detect-test') {
 				this._detectTest = false;
+			} else if (event.data.type === 'volume') {
+				this._masterGain = event.data.gain;
 			}
 		};
 	}
@@ -118,8 +123,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
 		Atomics.store(this._pointers, 1, (readPos + toRead) % this._capacity);
 
-		// Convert Int16 [-32768, 32767] to Float32 [-1, 1]
-		const scale = 1.0 / 32768.0;
+		// Convert Int16 [-32768, 32767] to Float32 [-1, 1], applying master gain
+		const scale = (1.0 / 32768.0) * this._masterGain;
 		for (let i = 0; i < toRead; i++) {
 			outChannel[i] = this._tempBuffer[i] * scale;
 		}
