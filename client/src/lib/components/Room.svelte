@@ -227,29 +227,32 @@
 			case 'room_state':
 				roomState.update((s) => ({
 					...s,
-					participants: (msg.participants as Array<{ id: string; name: string }>).map(
-						(p) => ({
+					participants: (msg.participants as Array<{ id: string; name: string }>)
+						.filter((p) => p.id !== s.participantId)
+						.map((p) => ({
 							id: p.id,
 							name: p.name,
 							gain: 1.0,
 							muted: false
-						})
-					)
+						}))
 				}));
 				break;
 			case 'participant_joined':
-				roomState.update((s) => ({
-					...s,
-					participants: [
-						...s.participants,
-						{
-							id: msg.id as string,
-							name: msg.name as string,
-							gain: 1.0,
-							muted: false
-						}
-					]
-				}));
+				roomState.update((s) => {
+					if ((msg.id as string) === s.participantId) return s;
+					return {
+						...s,
+						participants: [
+							...s.participants,
+							{
+								id: msg.id as string,
+								name: msg.name as string,
+								gain: 1.0,
+								muted: false
+							}
+						]
+					};
+				});
 				break;
 			case 'participant_left':
 				roomState.update((s) => ({
