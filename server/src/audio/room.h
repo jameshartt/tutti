@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -18,6 +19,15 @@ enum class RoomStatus {
     Claimed, // Has a password
     Full     // At max capacity
 };
+
+/// Helper: current time as nanoseconds since epoch (steady clock)
+inline int64_t now_ns() {
+    return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
+// Reaper timeouts
+constexpr auto kUnboundTimeout = std::chrono::seconds(15);
+constexpr auto kInactivityTimeout = std::chrono::seconds(15);
 
 /// A single rehearsal room with its own mixer and RT thread.
 class Room {
@@ -46,6 +56,9 @@ public:
 
     /// Remove a participant from the room
     void remove_participant(const std::string& id);
+
+    /// Remove stale participants (unbound or inactive). Returns count reaped.
+    size_t reap_stale_participants();
 
     /// Handle incoming audio datagram from a participant
     void on_audio_received(const std::string& participant_id,
@@ -101,6 +114,9 @@ private:
         std::string alias;
         std::shared_ptr<TransportSession> session;
         uint32_t output_sequence = 0;
+        std::chrono::steady_clock::time_point join_time;
+        int64_t last_audio_received_ns = 0;  // updated under participants_mutex_
+        int64_t last_audio_sent_ns = 0;       // updated under participants_mutex_
     };
     std::unordered_map<std::string, Participant> participants_;
     mutable std::mutex participants_mutex_;

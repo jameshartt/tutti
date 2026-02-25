@@ -2,6 +2,7 @@
 #include "room_names.h"
 
 #include <algorithm>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <sstream>
@@ -10,6 +11,10 @@ namespace tutti {
 
 RoomManager::RoomManager(size_t max_participants_per_room)
     : max_participants_per_room_(max_participants_per_room) {}
+
+RoomManager::~RoomManager() {
+    stop_reaper();
+}
 
 void RoomManager::initialize_default_rooms() {
     std::lock_guard<std::mutex> lock(rooms_mutex_);
@@ -115,6 +120,45 @@ RoomManager::VacateResult RoomManager::vacate_request(
     }
 
     return VacateResult::Sent;
+}
+
+void RoomManager::start_reaper() {
+    if (reaper_running_) return;
+    reaper_running_ = true;
+    reaper_thread_ = std::thread(&RoomManager::reaper_thread_func, this);
+    std::cout << "[Tutti] Participant reaper started\n";
+}
+
+void RoomManager::stop_reaper() {
+    reaper_running_ = false;
+    if (reaper_thread_.joinable()) {
+        reaper_thread_.join();
+    }
+}
+
+void RoomManager::reaper_thread_func() {
+    constexpr int kSleepChunksPerSweep = 50; // 50 × 100ms = 5s between sweeps
+    int chunks = 0;
+
+    while (reaper_running_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (++chunks < kSleepChunksPerSweep) continue;
+        chunks = 0;
+
+        // Snapshot all rooms
+        std::vector<std::shared_ptr<Room>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(rooms_mutex_);
+            snapshot.reserve(rooms_.size());
+            for (auto& [name, room] : rooms_) {
+                snapshot.push_back(room);
+            }
+        }
+
+        for (auto& room : snapshot) {
+            room->reap_stale_participants();
+        }
+    }
 }
 
 std::string RoomManager::generate_id() {

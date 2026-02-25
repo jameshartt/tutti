@@ -86,7 +86,7 @@ export interface RoomInfo {
 }
 
 /** Audio pipeline state */
-export type PipelineState = 'inactive' | 'initializing' | 'active' | 'error';
+export type PipelineState = 'inactive' | 'initializing' | 'active' | 'error' | 'disconnected';
 
 /** Transport type */
 export type TransportType = 'webtransport' | 'webrtc';

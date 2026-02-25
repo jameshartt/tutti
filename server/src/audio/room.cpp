@@ -57,7 +57,8 @@ bool Room::add_participant(const std::string& id,
     if (participants_.size() >= max_participants_) return false;
     if (participants_.count(id)) return false;
 
-    participants_[id] = {alias, std::move(session), 0};
+    participants_[id] = {alias, std::move(session), 0,
+                         std::chrono::steady_clock::now(), 0, 0};
     mixer_.add_participant(id);
 
     // Notify existing participants
@@ -151,12 +152,17 @@ void Room::on_audio_received(const std::string& participant_id,
     {
         std::lock_guard<std::mutex> lock(participants_mutex_);
         count = participants_.size();
+        // Stamp activity for reaper
+        auto recv_it = participants_.find(participant_id);
+        if (recv_it != participants_.end())
+            recv_it->second.last_audio_received_ns = now_ns();
         if (count == 2) {
             for (auto& [pid, p] : participants_) {
                 if (pid != participant_id) {
                     target_id = pid;
                     target_session = p.session;
                     output_seq = p.output_sequence++;
+                    p.last_audio_sent_ns = now_ns();
                     use_fast_path = true;
                     break;
                 }
@@ -260,6 +266,56 @@ std::vector<Room::ParticipantInfo> Room::get_participants() const {
     return result;
 }
 
+size_t Room::reap_stale_participants() {
+    std::vector<std::string> to_reap;
+    auto now = std::chrono::steady_clock::now();
+    auto now_nanos = now_ns();
+    auto inactivity_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kInactivityTimeout).count();
+    auto unbound_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(kUnboundTimeout).count();
+
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        size_t count = participants_.size();
+        for (auto& [id, p] : participants_) {
+            // Unbound: HTTP join with no transport session
+            if (!p.session) {
+                auto elapsed = now - p.join_time;
+                if (elapsed >= kUnboundTimeout) {
+                    to_reap.push_back(id);
+                }
+                continue;
+            }
+
+            // Solo participant: skip audio inactivity check
+            if (count <= 1) continue;
+
+            // Check audio inactivity (both directions)
+            int64_t last_recv = p.last_audio_received_ns;
+            int64_t last_sent = p.last_audio_sent_ns;
+            int64_t last_activity = std::max(last_recv, last_sent);
+
+            if (last_activity == 0) {
+                // Never had audio — fall back to join_time
+                auto elapsed = now - p.join_time;
+                if (elapsed >= kInactivityTimeout)
+                    to_reap.push_back(id);
+            } else {
+                if ((now_nanos - last_activity) >= inactivity_ns)
+                    to_reap.push_back(id);
+            }
+        }
+    }
+
+    for (const auto& id : to_reap) {
+        std::cout << "[Room:" << name_ << "] Reaping stale participant: " << id << "\n";
+        remove_participant(id);
+    }
+
+    return to_reap.size();
+}
+
 void Room::mixer_thread_func() {
 #ifdef __linux__
     // Set RT priority for mixer thread
@@ -311,6 +367,7 @@ void Room::send_outputs() {
         for (auto& [id, participant] : participants_) {
             AudioFrame frame;
             if (mixer_.pop_output(id, frame)) {
+                participant.last_audio_sent_ns = now_ns();
                 frame.sequence = participant.output_sequence++;
                 PendingSend ps;
                 ps.session = participant.session;

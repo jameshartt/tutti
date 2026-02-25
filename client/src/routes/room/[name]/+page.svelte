@@ -16,6 +16,13 @@
 		joined = s.currentRoom !== null;
 	});
 
+	// Navigate to lobby when room state resets (after handleLeave)
+	$effect(() => {
+		if (!joined && !showJoinDialog) {
+			goto('/');
+		}
+	});
+
 	async function handleJoin(alias: string, password: string) {
 		const result = await joinRoom(data.roomName, alias, password);
 		if (result.success) {

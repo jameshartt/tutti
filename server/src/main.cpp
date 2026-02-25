@@ -99,6 +99,7 @@ int main(int argc, char* argv[]) {
     // Initialize room manager
     auto room_manager = std::make_shared<tutti::RoomManager>(max_participants);
     room_manager->initialize_default_rooms();
+    room_manager->start_reaper();
     std::cout << "[Tutti] Initialized 16 rooms\n";
 
     // Create session binder — routes transport events to rooms
@@ -210,6 +211,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "\n[Tutti] Shutting down...\n";
+    room_manager->stop_reaper();
     http_server->stop();
     ws_signaling->stop();
     wt_transport->stop();

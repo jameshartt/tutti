@@ -1,9 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 #include "audio/room.h"
@@ -15,8 +17,16 @@ class RoomManager {
 public:
     explicit RoomManager(size_t max_participants_per_room = 4);
 
+    ~RoomManager();
+
     /// Initialize default rooms from kDefaultRooms
     void initialize_default_rooms();
+
+    /// Start the background reaper thread
+    void start_reaper();
+
+    /// Stop the reaper thread
+    void stop_reaper();
 
     /// Get room by name (nullptr if not found)
     std::shared_ptr<Room> get_room(const std::string& name);
@@ -76,6 +86,11 @@ private:
 
     /// Generate a unique participant ID
     static std::string generate_id();
+
+    // Reaper thread
+    std::thread reaper_thread_;
+    std::atomic<bool> reaper_running_{false};
+    void reaper_thread_func();
 };
 
 } // namespace tutti

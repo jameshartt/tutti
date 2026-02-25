@@ -10,6 +10,8 @@ export interface RoomState {
 	currentRoom: string | null;
 	/** Our participant ID */
 	participantId: string | null;
+	/** Our display alias (kept for reconnect) */
+	alias: string | null;
 	/** Other participants in the room */
 	participants: Participant[];
 	/** Is a vacate request active */
@@ -19,6 +21,7 @@ export interface RoomState {
 const initialRoomState: RoomState = {
 	currentRoom: null,
 	participantId: null,
+	alias: null,
 	participants: [],
 	vacateNotice: false
 };
@@ -62,7 +65,8 @@ export async function joinRoom(
 			roomState.update((s) => ({
 				...s,
 				currentRoom: roomName,
-				participantId: data.participant_id
+				participantId: data.participant_id,
+				alias
 			}));
 			return { success: true };
 		}

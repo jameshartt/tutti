@@ -5,7 +5,7 @@
 	import LatencyDisplay from './LatencyDisplay.svelte';
 	import AudioDiagnostics from './AudioDiagnostics.svelte';
 	import LatencyTester from './LatencyTester.svelte';
-	import { roomState, leaveRoom } from '../stores/room.js';
+	import { roomState, leaveRoom, joinRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
 	import { updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs } from '../stores/audio-stats.js';
@@ -34,6 +34,11 @@
 	let micBoost = $state(1.0);
 	let masterVolume = $state(1.0);
 	let inputLevel = $state(0);
+
+	// Reconnect state
+	let reconnectAttempts = $state(0);
+	let reconnecting = $state(false);
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let capture: CaptureHandle | null = null;
 	let playback: PlaybackHandle | null = null;
@@ -72,6 +77,21 @@
 			currentBreakdown = null;
 			currentLatencyInfo = null;
 		}
+	});
+
+	// Phase 2: beforeunload — send leave beacon on tab close
+	function handleBeforeUnload() {
+		if (roomName && participantId) {
+			const blob = new Blob(
+				[JSON.stringify({ participant_id: participantId })],
+				{ type: 'application/json' }
+			);
+			navigator.sendBeacon(`/api/rooms/${encodeURIComponent(roomName)}/leave`, blob);
+		}
+	}
+
+	onMount(() => {
+		window.addEventListener('beforeunload', handleBeforeUnload);
 	});
 
 	async function startAudio() {
@@ -141,6 +161,13 @@
 				// Start RTT monitoring
 				rttMonitor = new RTTMonitor(transport);
 				rttMonitor.start();
+
+				// Listen for transport disconnect
+				transport.onStateChange((state) => {
+					if (state === 'disconnected' || state === 'failed') {
+						handleTransportDisconnect();
+					}
+				});
 			};
 
 			// Try preferred transport, fall back if it fails
@@ -317,7 +344,67 @@
 		playback?.playbackPort.postMessage({ type: 'volume', gain });
 	}
 
+	function handleTransportDisconnect() {
+		if (pipelineState === 'disconnected') return; // guard double-fire
+
+		// Tear down audio pipeline
+		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+		rttMonitor?.stop();
+		rttMonitor = null;
+		bridge?.stop();
+		bridge = null;
+		capture?.stop();
+		capture = null;
+		playback?.stop();
+		playback = null;
+		activeTransport?.disconnect();
+		activeTransport = null;
+		transportConnected = false;
+		closeAudioContext();
+
+		setPipelineState('disconnected');
+
+		// Auto-reconnect after 3s
+		reconnectTimer = setTimeout(() => handleReconnect(), 3000);
+	}
+
+	async function handleReconnect() {
+		reconnectAttempts++;
+		reconnecting = true;
+
+		try {
+			// Read alias from store for rejoin
+			let alias: string | null = null;
+			roomState.subscribe((s) => (alias = s.alias))();
+
+			if (!alias) {
+				reconnecting = false;
+				return;
+			}
+
+			// Rejoin room (gets new participant ID)
+			const result = await joinRoom(roomName, alias);
+			if (!result.success) throw new Error(result.error ?? 'rejoin failed');
+
+			// Restart the full audio pipeline
+			await startAudio();
+
+			// Success — reset reconnect state
+			reconnectAttempts = 0;
+			reconnecting = false;
+		} catch (err) {
+			console.warn('[Tutti] Reconnect attempt failed:', err);
+			reconnecting = false;
+
+			if (reconnectAttempts < 2) {
+				reconnectTimer = setTimeout(() => handleReconnect(), 5000);
+			}
+			// After 2 failures, stop auto-reconnecting (manual buttons shown)
+		}
+	}
+
 	async function handleLeave() {
+		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		rttMonitor?.stop();
 		rttMonitor = null;
@@ -331,6 +418,8 @@
 	}
 
 	onDestroy(() => {
+		window.removeEventListener('beforeunload', handleBeforeUnload);
+		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		rttMonitor?.stop();
 		rttMonitor = null;
@@ -369,6 +458,20 @@
 			{/if}
 			<p>Check microphone permissions and that you're using wired headphones.</p>
 			<button onclick={startAudio}>Retry</button>
+		</div>
+	{:else if pipelineState === 'disconnected'}
+		<div class="disconnect-message">
+			{#if reconnecting}
+				<p>Reconnecting... (attempt {reconnectAttempts})</p>
+			{:else if reconnectAttempts >= 2}
+				<p>Connection lost.</p>
+				<div class="disconnect-actions">
+					<button class="reconnect-btn" onclick={() => handleReconnect()}>Reconnect</button>
+					<button class="leave-btn" onclick={handleLeave}>Leave</button>
+				</div>
+			{:else}
+				<p>Connection lost. Reconnecting shortly...</p>
+			{/if}
 		</div>
 	{:else}
 		{#if !transportConnected}
@@ -514,6 +617,36 @@
 		color: #facc15;
 		border-radius: 6px;
 		font-size: 0.85rem;
+	}
+
+	.disconnect-message {
+		text-align: center;
+		padding: 2rem;
+		color: #facc15;
+		background: #3a3a1a;
+		border-radius: 8px;
+		margin: 2rem 0;
+	}
+
+	.disconnect-actions {
+		display: flex;
+		gap: 0.75rem;
+		justify-content: center;
+		margin-top: 1rem;
+	}
+
+	.reconnect-btn {
+		padding: 8px 20px;
+		border: 1px solid #facc15;
+		border-radius: 6px;
+		background: transparent;
+		color: #facc15;
+		cursor: pointer;
+		font-weight: 600;
+	}
+
+	.disconnect-message .leave-btn {
+		padding: 8px 20px;
 	}
 
 </style>
