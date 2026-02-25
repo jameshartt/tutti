@@ -2,7 +2,12 @@
 set -euo pipefail
 
 # Tutti deployment script — idempotent provisioning for a fresh Ubuntu server.
-# Usage: sudo bash deploy.sh
+#
+# Local usage (pushes code + runs remotely):
+#   ./deploy.sh user@host          # e.g. ./deploy.sh root@tutti.rocks
+#
+# Server usage (run directly on the server):
+#   sudo bash deploy.sh
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -12,6 +17,27 @@ info()  { echo -e "${CYAN}[info]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[ok]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[warn]${NC}  $*"; }
 fatal() { echo -e "${RED}[error]${NC} $*"; exit 1; }
+
+# ── Remote deploy: rsync code then run deploy.sh on server ──────────────────
+if [[ $# -ge 1 && "$1" != "--"* ]]; then
+    SSH_TARGET="$1"
+    REMOTE_DIR="/opt/tutti"
+
+    info "Syncing code to ${SSH_TARGET}:${REMOTE_DIR}..."
+    rsync -az --delete --progress --stats \
+        --exclude '.git' \
+        --exclude 'node_modules' \
+        --exclude '.svelte-kit' \
+        --exclude 'client/build' \
+        --exclude 'server/build' \
+        --exclude '.env' \
+        "$REPO_DIR/" "${SSH_TARGET}:${REMOTE_DIR}/"
+    ok "Code synced"
+
+    info "Running deploy.sh on ${SSH_TARGET}..."
+    ssh -t "$SSH_TARGET" "sudo bash ${REMOTE_DIR}/deploy.sh"
+    exit $?
+fi
 
 # ── Preflight ────────────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || fatal "This script must be run as root (use sudo)."
@@ -209,13 +235,8 @@ else
     ok "DNS verified: ${domain} -> ${public_ip}"
 fi
 
-# ── Pull latest code ─────────────────────────────────────────────────────────
-cd "$REPO_DIR"
-info "Pulling latest changes..."
-sudo -u "${SUDO_USER:-$(stat -c '%U' .)}" git pull --ff-only || fatal "git pull failed — resolve manually."
-ok "Code up to date: $(git log --oneline -1)"
-
 # ── Launch ───────────────────────────────────────────────────────────────────
+cd "$REPO_DIR"
 info "Building images..."
 docker compose build
 info "Restarting containers..."
