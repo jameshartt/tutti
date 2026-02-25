@@ -209,8 +209,13 @@ else
     ok "DNS verified: ${domain} -> ${public_ip}"
 fi
 
-# ── Launch ───────────────────────────────────────────────────────────────────
+# ── Pull latest code ─────────────────────────────────────────────────────────
 cd "$REPO_DIR"
+info "Pulling latest changes..."
+sudo -u "${SUDO_USER:-$(stat -c '%U' .)}" git pull --ff-only || fatal "git pull failed — resolve manually."
+ok "Code up to date: $(git log --oneline -1)"
+
+# ── Launch ───────────────────────────────────────────────────────────────────
 info "Building images..."
 docker compose build
 info "Restarting containers..."
