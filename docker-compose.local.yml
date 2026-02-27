@@ -1,0 +1,6 @@
+# Local dev overrides: mkcert TLS certs for LAN/iPhone testing
+services:
+  caddy:
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro
