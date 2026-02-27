@@ -19,7 +19,7 @@ export function getAudioContext(): AudioContext {
 
 	audioContext = new AudioContext({
 		sampleRate: detectOptimalSampleRate(),
-		latencyHint: 'interactive'
+		latencyHint: 0.003
 	});
 
 	return audioContext;

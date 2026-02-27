@@ -1,12 +1,15 @@
 /**
  * Transport Bridge: connects the audio pipeline to the network transport.
  *
- * Capture path:  Ring buffer (from capture worklet) → serialize → transport.send()
+ * Capture path:  Ring buffer (from capture worklet) → Worker → serialize → transport.send()
  * Playback path: transport.onReceive() → deserialize → ring buffer (to playback worklet)
  *
- * Runs on the main thread. Polls the capture ring buffer at the audio frame rate
- * and dispatches packets. Incoming packets are written directly to the playback
- * ring buffer.
+ * The capture side runs in a dedicated Web Worker that uses Atomics.waitAsync()
+ * to wake the instant the capture worklet writes new data. If the Worker fails
+ * to start, we fall back to setInterval(2ms) polling on the main thread.
+ *
+ * The playback path stays on the main thread (adding a Worker hop would
+ * increase playback latency).
  */
 
 import { RingBufferReader, RingBufferWriter } from './ring-buffer.js';
@@ -37,15 +40,17 @@ export class TransportBridge {
 	private playbackWriter: RingBufferWriter;
 	private transport: Transport;
 	private capturePort: MessagePort | null;
+	private captureRingBufferSAB: SharedArrayBuffer;
 	private running = false;
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
+	private worker: Worker | null = null;
 	private sendSequence = 0;
 	private sendTimestamp = 0;
 	private incomingCount = 0;
 	private loopbackEnabled = false;
 	private micMuted = false;
 
-	// Pre-allocated buffers for zero-allocation on hot path
+	// Pre-allocated buffers for zero-allocation on hot path (fallback only)
 	private readBuffer = new Int16Array(SAMPLES_PER_FRAME);
 
 	constructor(options: TransportBridgeOptions) {
@@ -53,6 +58,7 @@ export class TransportBridge {
 		this.playbackWriter = new RingBufferWriter(options.playbackRingBufferSAB);
 		this.transport = options.transport;
 		this.capturePort = options.capturePort ?? null;
+		this.captureRingBufferSAB = options.captureRingBufferSAB;
 	}
 
 	/** Start the bridge: begin polling capture buffer and listening for incoming data */
@@ -60,32 +66,66 @@ export class TransportBridge {
 		if (this.running) return;
 		this.running = true;
 
-		// Listen for incoming datagrams
+		// Listen for incoming datagrams (playback path — always on main thread)
 		this.transport.onDatagram((data) => {
 			this.handleIncoming(data);
 		});
 
-		if (this.capturePort) {
-			// Event-driven: capture worklet notifies us when a frame is written
-			this.capturePort.onmessage = (event) => {
-				if (event.data?.type === 'frame-ready') {
-					this.drainCapture();
+		// Try to start capture drain in a dedicated Worker
+		try {
+			this.worker = new Worker(
+				new URL('./bridge-worker.ts', import.meta.url),
+				{ type: 'module' }
+			);
+
+			this.worker.onmessage = (event: MessageEvent) => {
+				const msg = event.data;
+				if (msg.type === 'packet') {
+					this.transport.sendDatagram(new Uint8Array(msg.data));
+					this.sendSequence++;
+				} else if (msg.type === 'loopback') {
+					this.playbackWriter.write(new Int16Array(msg.samples));
 				}
 			};
-		} else {
-			// Fallback: poll capture ring buffer at ~2.67ms intervals
-			this.pollTimer = setInterval(() => {
-				this.drainCapture();
-			}, 2);
+
+			this.worker.onerror = (err) => {
+				console.warn('[TransportBridge] Worker error, falling back to polling:', err.message);
+				this.worker = null;
+				this.startPollingFallback();
+			};
+
+			// Initialize the Worker with the capture SAB
+			this.worker.postMessage({
+				type: 'init',
+				captureRingBufferSAB: this.captureRingBufferSAB
+			});
+
+			console.log('[TransportBridge] Capture bridge Worker started');
+		} catch (err) {
+			console.warn('[TransportBridge] Worker creation failed, falling back to polling:', err);
+			this.worker = null;
+			this.startPollingFallback();
 		}
+	}
+
+	/** Fallback: poll capture ring buffer on main thread */
+	private startPollingFallback(): void {
+		this.pollTimer = setInterval(() => {
+			this.drainCapture();
+		}, 2);
+		console.log('[TransportBridge] Using polling fallback (2ms interval)');
 	}
 
 	/** Stop the bridge */
 	stop(): void {
 		this.running = false;
-		if (this.capturePort) {
-			this.capturePort.onmessage = null;
+
+		if (this.worker) {
+			this.worker.postMessage({ type: 'stop' });
+			this.worker.terminate();
+			this.worker = null;
 		}
+
 		if (this.pollTimer) {
 			clearInterval(this.pollTimer);
 			this.pollTimer = null;
@@ -95,11 +135,17 @@ export class TransportBridge {
 	/** Mute/unmute mic (still drains buffer, but skips sending) */
 	setMicMuted(muted: boolean): void {
 		this.micMuted = muted;
+		if (this.worker) {
+			this.worker.postMessage({ type: 'mute', muted });
+		}
 	}
 
 	/** Enable/disable local loopback (for pipeline latency testing) */
 	setLoopback(enabled: boolean): void {
 		this.loopbackEnabled = enabled;
+		if (this.worker) {
+			this.worker.postMessage({ type: 'loopback', enabled });
+		}
 	}
 
 	/** Get transport packet counters for diagnostics */
@@ -110,7 +156,7 @@ export class TransportBridge {
 		};
 	}
 
-	/** Read from capture ring buffer, packetize, and send */
+	/** Read from capture ring buffer, packetize, and send (fallback path) */
 	private drainCapture(): void {
 		while (this.captureReader.availableRead() >= SAMPLES_PER_FRAME) {
 			const read = this.captureReader.read(this.readBuffer);
@@ -125,17 +171,11 @@ export class TransportBridge {
 				};
 				this.sendTimestamp += SAMPLES_PER_FRAME;
 
-				// serializePacket returns a fresh Uint8Array each call —
-				// required because datagramWriter.write() is async and may
-				// hold the reference until the QUIC stack copies the data.
 				this.transport.sendDatagram(serializePacket(packet));
 			} else {
 				this.sendTimestamp += SAMPLES_PER_FRAME;
 			}
 
-			// Local loopback: write captured frame back to playback buffer
-			// so the pipeline latency test can detect it without needing
-			// the server to echo audio back to the sender.
 			if (this.loopbackEnabled) {
 				this.playbackWriter.write(this.readBuffer);
 			}

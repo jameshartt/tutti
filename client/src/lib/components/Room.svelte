@@ -116,7 +116,9 @@
 				const transportInfo = await fetch('/api/transport').then(r => r.json());
 				certHash = transportInfo.cert_hash;
 				if (transportInfo.wt_url) wtUrl = transportInfo.wt_url;
-				if (transportInfo.ws_url) wsUrl = transportInfo.ws_url;
+				// wsUrl is NOT overridden from server — the client's default
+				// (based on window.location.host) always routes through the
+				// reverse proxy (Caddy in prod, Vite in dev).
 			} catch {
 				// Server may not have /api/transport — use defaults
 			}

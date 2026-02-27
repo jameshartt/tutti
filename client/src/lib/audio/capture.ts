@@ -10,8 +10,8 @@ import { getAudioContext, getMicrophoneStream } from './context.js';
 import { createRingBufferSAB } from './ring-buffer.js';
 import { SAMPLES_PER_FRAME } from './types.js';
 
-// Ring buffer capacity: ~21ms of audio at 48kHz (8 frames)
-const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 8; // 1024 samples ≈ 21ms
+// Ring buffer capacity: ~10.7ms of audio at 48kHz (4 frames)
+const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 4; // 512 samples ≈ 10.7ms
 
 export interface CaptureHandle {
 	/** SharedArrayBuffer containing captured audio (Int16 PCM) */
