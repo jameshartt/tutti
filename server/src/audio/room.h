@@ -25,8 +25,13 @@ inline int64_t now_ns() {
     return std::chrono::steady_clock::now().time_since_epoch().count();
 }
 
-// Reaper timeouts
-constexpr auto kUnboundTimeout = std::chrono::seconds(15);
+// Reaper timeouts.
+// kUnboundTimeout must cover the whole join flow: the participant is
+// created by the HTTP join, but binding only happens after the user
+// taps "Start audio", grants mic permission, and a transport connects
+// (WebTransport attempt + WebRTC ICE fallback can take 30s+ on slow
+// networks). 15s raced that flow and reaped participants mid-join.
+constexpr auto kUnboundTimeout = std::chrono::seconds(120);
 constexpr auto kInactivityTimeout = std::chrono::seconds(15);
 
 /// A single rehearsal room with its own mixer and RT thread.

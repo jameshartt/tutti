@@ -20,6 +20,9 @@ services:
     build: ./server
     ports:
       - "4433:4433/udp"
+      # WebRTC ICE candidates (libdatachannel pinned port range -
+      # must match portRangeBegin/End in ws_signaling.cpp)
+      - "50000-50019:50000-50019/udp"
     expose:
       - "8080"
       - "8081"

@@ -108,10 +108,37 @@
 				// Server may not have /api/transport — use defaults
 			}
 
+			// Helper: bound a transport connect attempt. Without this a
+			// stalled QUIC handshake (Firefox, UDP-blocked networks) or a
+			// failing ICE negotiation (iOS, strict NATs) hangs for minutes
+			// before the fallback path ever runs.
+			const connectWithTimeout = async (
+				transport: import('../transport/transport.js').Transport,
+				url: string,
+				timeoutMs: number,
+				connectOptions?: { certHash?: string }
+			) => {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await Promise.race([
+						transport.connect(url, connectOptions),
+						new Promise<never>((_, reject) => {
+							timer = setTimeout(() => {
+								transport.disconnect();
+								reject(new Error(`Transport connect timed out after ${timeoutMs}ms`));
+							}, timeoutMs);
+						})
+					]);
+				} finally {
+					clearTimeout(timer);
+				}
+			};
+
 			// Helper: wire up a transport, connect, bind, and start bridge
 			const wireTransport = async (
 				transport: import('../transport/transport.js').Transport,
 				url: string,
+				timeoutMs: number,
 				connectOptions?: { certHash?: string }
 			) => {
 				transport.onMessage((msg) => {
@@ -123,7 +150,7 @@
 					}
 				});
 
-				await transport.connect(url, connectOptions);
+				await connectWithTimeout(transport, url, timeoutMs, connectOptions);
 
 				if (participantId) {
 					transport.sendReliable(
@@ -166,7 +193,7 @@
 					setTransportType('webtransport');
 					transportDesc = getTransportDescription();
 					const transport = createTransport();
-					await wireTransport(transport, wtUrl, { certHash });
+					await wireTransport(transport, wtUrl, 5000, { certHash });
 					connected = true;
 				} catch (wtErr) {
 					console.warn('[Tutti] WebTransport failed, falling back to WebRTC:', wtErr);
@@ -179,7 +206,7 @@
 					transportDesc = 'WebRTC DataChannel' + (preferredType === 'webtransport' ? ' (fallback)' : '');
 					const { WebRTCTransport } = await import('../transport/webrtc.js');
 					const rtcTransport = new WebRTCTransport();
-					await wireTransport(rtcTransport, wsUrl);
+					await wireTransport(rtcTransport, wsUrl, 12000);
 				} catch (rtcErr) {
 					console.warn('[Tutti] Transport not connected — audio capture is local only:', rtcErr);
 					transportConnected = false;
@@ -289,6 +316,36 @@
 			case 'pong':
 				rttMonitor?.handlePong(msg as unknown as { id: number });
 				break;
+			case 'error':
+				// The server reaps participants that take too long to bind
+				// (slow permission grants / transport fallback). Recover by
+				// re-joining for a fresh ID and re-binding — previously this
+				// error was ignored and the room sat in a zombie state.
+				if (msg.error === 'participant_not_found') {
+					rejoinAndRebind();
+				}
+				break;
+		}
+	}
+
+	let rebinding = false;
+	async function rejoinAndRebind() {
+		if (rebinding || !activeTransport) return;
+		rebinding = true;
+		try {
+			const alias = get(roomState).alias;
+			if (!alias) return;
+			const result = await joinRoom(roomName, alias);
+			if (!result.success) {
+				console.warn('[Tutti] Re-join after stale bind failed:', result.error);
+				return;
+			}
+			const freshId = get(roomState).participantId;
+			activeTransport.sendReliable(
+				JSON.stringify({ type: 'bind', participant_id: freshId, room: roomName })
+			);
+		} finally {
+			rebinding = false;
 		}
 	}
 

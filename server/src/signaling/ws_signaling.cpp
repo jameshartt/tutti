@@ -104,6 +104,14 @@ void WsSignaling::create_peer_connection(const std::string& session_id,
                                           const std::string& offer_sdp) {
     rtc::Configuration config;
     config.iceServers.push_back({"stun:stun.l.google.com:19302"});
+    // Pin ICE to a fixed UDP port range that docker-compose publishes
+    // 1:1 (50000-50019/udp). Without this, libdatachannel binds random
+    // ephemeral ports inside the container that are NOT reachable from
+    // outside — connections only succeeded when outbound conntrack
+    // hole-punching happened to line up, which is why WebRTC was slow
+    // or failed entirely on iOS/strict NATs.
+    config.portRangeBegin = 50000;
+    config.portRangeEnd = 50019;
 
     auto pc = std::make_shared<rtc::PeerConnection>(config);
 

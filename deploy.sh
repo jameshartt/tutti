@@ -87,10 +87,11 @@ if command -v ufw &>/dev/null; then
     ufw allow 443/tcp  comment "HTTPS"        >/dev/null 2>&1 || true
     ufw allow 443/udp  comment "HTTP/3 QUIC"  >/dev/null 2>&1 || true
     ufw allow 4433/udp comment "WebTransport" >/dev/null 2>&1 || true
+    ufw allow 50000:50019/udp comment "tutti webrtc ice" >/dev/null 2>&1 || true
     ufw --force enable >/dev/null 2>&1 || true
-    ok "Firewall configured (22/tcp, 80/tcp, 443/tcp, 443/udp, 4433/udp)"
+    ok "Firewall configured (22/tcp, 80/tcp, 443/tcp, 443/udp, 4433/udp, 50000-50019/udp)"
 else
-    warn "ufw not found — make sure ports 80, 443 (tcp+udp), and 4433/udp are open."
+    warn "ufw not found — make sure ports 80, 443 (tcp+udp), 4433/udp, and 50000-50019/udp are open."
 fi
 
 # ── SSH hardening ──────────────────────────────────────────────────────────
