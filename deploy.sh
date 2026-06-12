@@ -199,14 +199,25 @@ if [[ -f "$ENV_FILE" ]]; then
     info "Existing .env found:"
     cat "$ENV_FILE"
     echo
-    read -rp "Keep existing .env? [Y/n] " keep
-    if [[ "${keep,,}" == "n" ]]; then
-        rm "$ENV_FILE"
+    if [[ -t 0 ]]; then
+        read -rp "Keep existing .env? [Y/n] " keep
+        if [[ "${keep,,}" == "n" ]]; then
+            rm "$ENV_FILE"
+        fi
+    else
+        # Non-interactive (e.g. `ssh host "bash deploy.sh"`): keep .env.
+        # Previously `read` hit EOF here and aborted the script before
+        # the docker build/up steps ever ran.
+        info "Non-interactive shell — keeping existing .env"
     fi
 fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
-    read -rp "Enter domain name [tutti.rocks]: " domain
+    if [[ -t 0 ]]; then
+        read -rp "Enter domain name [tutti.rocks]: " domain
+    else
+        domain=""
+    fi
     domain="${domain:-tutti.rocks}"
 
     cat > "$ENV_FILE" <<EOF
