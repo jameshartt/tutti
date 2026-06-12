@@ -266,6 +266,13 @@ std::vector<Room::ParticipantInfo> Room::get_participants() const {
     return result;
 }
 
+void Room::broadcast_control(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(participants_mutex_);
+    for (auto& [pid, p] : participants_) {
+        if (p.session) p.session->send_reliable(msg);
+    }
+}
+
 size_t Room::reap_stale_participants() {
     std::vector<std::string> to_reap;
     auto now = std::chrono::steady_clock::now();

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { get } from 'svelte/store';
 	import Mixer from './Mixer.svelte';
 	import VacateNotice from './VacateNotice.svelte';
 	import LatencyDisplay from './LatencyDisplay.svelte';
@@ -16,18 +17,31 @@
 	import { resumeAudioContext, closeAudioContext, getAudioContext, getHardwareLatency } from '../audio/context.js';
 	import { RTTMonitor } from '../latency/rtt-monitor.js';
 	import { latencyBreakdown } from '../latency/breakdown.js';
-	import type { Participant, LatencyBreakdown, LatencyInfo } from '../audio/types.js';
+	import type { LatencyBreakdown, LatencyInfo } from '../audio/types.js';
 
 	let { roomName }: { roomName: string } = $props();
 
-	let participants: Participant[] = $state([]);
-	let vacateNotice = $state(false);
-	let pipelineState = $state<string>('inactive');
+	// Auto-subscriptions ($store) are cleaned up on destroy — no leaked subscribers
+	let participants = $derived($roomState.participants);
+	let vacateNotice = $derived($roomState.vacateNotice);
+	let participantId = $derived($roomState.participantId);
+	let pipelineState = $derived($audioState.pipelineState);
+	let nerdMode = $derived($settings.nerdMode);
+
+	let currentBreakdown: LatencyBreakdown | null = $derived($latencyBreakdown?.breakdown ?? null);
+	let currentLatencyInfo: LatencyInfo | null = $derived($latencyBreakdown?.info ?? null);
+
 	let transportDesc = $state('');
-	let currentBreakdown: LatencyBreakdown | null = $state(null);
-	let currentLatencyInfo: LatencyInfo | null = $state(null);
-	let nerdMode = $state(false);
-	let prebufferFrames = $state(0);
+	let prebufferFrames = $state(get(settings).prebufferFrames);
+
+	// Push prebuffer changes from settings into the playback worklet
+	$effect(() => {
+		const newPrebuffer = $settings.prebufferFrames;
+		if (newPrebuffer !== prebufferFrames) {
+			prebufferFrames = newPrebuffer;
+			playback?.sendConfig({ prebufferFrames: newPrebuffer });
+		}
+	});
 
 	// Self-channel state
 	let micMuted = $state(false);
@@ -40,44 +54,15 @@
 	let reconnecting = $state(false);
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-	let capture: CaptureHandle | null = null;
-	let playback: PlaybackHandle | null = null;
-	let bridge: TransportBridge | null = null;
+	// $state so the nerd-zone template block reacts when the pipeline comes up
+	let capture: CaptureHandle | null = $state(null);
+	let playback: PlaybackHandle | null = $state(null);
+	let bridge: TransportBridge | null = $state(null);
 	let activeTransport: import('../transport/transport.js').Transport | null = null;
 	let rttMonitor: RTTMonitor | null = null;
 	let errorDetail = $state('');
 	let transportConnected = $state(false);
-	let participantId: string | null = null;
 	let statsTimer: ReturnType<typeof setInterval> | null = null;
-
-	roomState.subscribe((s) => {
-		participants = s.participants;
-		vacateNotice = s.vacateNotice;
-		participantId = s.participantId;
-	});
-
-	audioState.subscribe((s) => {
-		pipelineState = s.pipelineState;
-	});
-
-	settings.subscribe((s) => {
-		nerdMode = s.nerdMode;
-		const newPrebuffer = s.prebufferFrames;
-		if (newPrebuffer !== prebufferFrames) {
-			prebufferFrames = newPrebuffer;
-			playback?.sendConfig({ prebufferFrames: newPrebuffer });
-		}
-	});
-
-	latencyBreakdown.subscribe((lb) => {
-		if (lb) {
-			currentBreakdown = lb.breakdown;
-			currentLatencyInfo = lb.info;
-		} else {
-			currentBreakdown = null;
-			currentLatencyInfo = null;
-		}
-	});
 
 	// Phase 2: beforeunload — send leave beacon on tab close
 	function handleBeforeUnload() {
@@ -376,8 +361,7 @@
 
 		try {
 			// Read alias from store for rejoin
-			let alias: string | null = null;
-			roomState.subscribe((s) => (alias = s.alias))();
+			const alias = get(roomState).alias;
 
 			if (!alias) {
 				reconnecting = false;
@@ -437,48 +421,64 @@
 	<VacateNotice visible={vacateNotice} />
 
 	<header class="room-header">
-		<h1>{roomName}</h1>
+		<div class="header-title">
+			<a class="back-link" href="/" onclick={(e) => { e.preventDefault(); handleLeave(); }} title="Back to lobby">&larr;</a>
+			<h1>{roomName}</h1>
+			{#if pipelineState === 'active'}
+				<span class="live-pill" class:offline={!transportConnected}>
+					<span class="live-pill-dot"></span>
+					{transportConnected ? 'live' : 'local'}
+				</span>
+			{/if}
+		</div>
 		<div class="header-actions">
-			<button class="nerd-btn" class:active={nerdMode} onclick={toggleNerdMode} title="Toggle diagnostics">&#9881;</button>
-			<button class="leave-btn" onclick={handleLeave}>Leave</button>
+			<button class="nerd-btn" class:active={nerdMode} onclick={toggleNerdMode} title="Toggle diagnostics" aria-label="Toggle diagnostics">&#9881;</button>
+			<button class="btn btn-ghost leave-btn" onclick={handleLeave}>Leave</button>
 		</div>
 	</header>
 
 	{#if pipelineState === 'inactive'}
 		<div class="start-prompt">
-			<p>Ready to rehearse?</p>
-			<button class="start-btn" onclick={startAudio}>Start Audio</button>
-			<p class="hint">Requires microphone access. Use wired headphones for best results.</p>
+			<div class="start-glow" aria-hidden="true"></div>
+			<p class="start-eyebrow">The room is yours</p>
+			<p class="start-title">Ready to rehearse?</p>
+			<button class="btn btn-primary start-btn" onclick={startAudio}>
+				<span class="start-icon" aria-hidden="true">&#9679;</span> Start audio
+			</button>
+			<p class="hint">Needs microphone access &middot; wired headphones strongly recommended</p>
 		</div>
 	{:else if pipelineState === 'initializing'}
-		<div class="status-message">Setting up audio...</div>
+		<div class="status-message">
+			<span class="tuning-bars" aria-hidden="true"><span></span><span></span><span></span></span>
+			Setting up audio&hellip;
+		</div>
 	{:else if pipelineState === 'error'}
 		<div class="error-message">
-			<p>Audio setup failed.</p>
+			<p class="error-title">Audio setup failed</p>
 			{#if errorDetail}
 				<p class="error-detail">{errorDetail}</p>
 			{/if}
-			<p>Check microphone permissions and that you're using wired headphones.</p>
-			<button onclick={startAudio}>Retry</button>
+			<p class="error-help">Check microphone permissions and that you're using wired headphones.</p>
+			<button class="btn btn-danger-ghost" onclick={startAudio}>Retry</button>
 		</div>
 	{:else if pipelineState === 'disconnected'}
 		<div class="disconnect-message">
 			{#if reconnecting}
-				<p>Reconnecting... (attempt {reconnectAttempts})</p>
+				<p>Reconnecting&hellip; (attempt {reconnectAttempts})</p>
 			{:else if reconnectAttempts >= 2}
 				<p>Connection lost.</p>
 				<div class="disconnect-actions">
-					<button class="reconnect-btn" onclick={() => handleReconnect()}>Reconnect</button>
-					<button class="leave-btn" onclick={handleLeave}>Leave</button>
+					<button class="btn reconnect-btn" onclick={() => handleReconnect()}>Reconnect</button>
+					<button class="btn btn-ghost" onclick={handleLeave}>Leave</button>
 				</div>
 			{:else}
-				<p>Connection lost. Reconnecting shortly...</p>
+				<p>Connection lost. Reconnecting shortly&hellip;</p>
 			{/if}
 		</div>
 	{:else}
 		{#if !transportConnected}
 			<div class="transport-warning">
-				Microphone active (local only). Server transport not connected.
+				Microphone active (local only) &mdash; server transport not connected.
 			</div>
 		{/if}
 
@@ -496,11 +496,13 @@
 		/>
 
 		{#if nerdMode}
-			<LatencyDisplay latency={currentLatencyInfo} breakdown={currentBreakdown} />
-			<AudioDiagnostics {transportDesc} {transportConnected} />
-			{#if capture && playback && bridge}
-				<LatencyTester capturePort={capture.capturePort} playbackPort={playback.playbackPort} setLoopback={(enabled) => bridge?.setLoopback(enabled)} />
-			{/if}
+			<div class="nerd-zone">
+				<LatencyDisplay latency={currentLatencyInfo} breakdown={currentBreakdown} />
+				<AudioDiagnostics {transportDesc} {transportConnected} />
+				{#if capture && playback && bridge}
+					<LatencyTester capturePort={capture.capturePort} playbackPort={playback.playbackPort} setLoopback={(enabled) => bridge?.setLoopback(enabled)} />
+				{/if}
+			</div>
 		{/if}
 	{/if}
 </div>
@@ -509,9 +511,9 @@
 	.room {
 		display: flex;
 		flex-direction: column;
-		max-width: 640px;
+		max-width: 680px;
 		margin: 0 auto;
-		padding: 1rem;
+		padding: 1rem 1.25rem 2rem;
 		min-height: 100vh;
 	}
 
@@ -519,14 +521,67 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		margin-bottom: 1rem;
-		padding-bottom: 0.75rem;
-		border-bottom: 1px solid #333;
+		margin-bottom: 1.25rem;
+		padding-bottom: 0.85rem;
+		border-bottom: 1px solid var(--line-1);
+	}
+
+	.header-title {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		min-width: 0;
+	}
+
+	.back-link {
+		color: var(--text-3);
+		text-decoration: none;
+		font-size: 1.1rem;
+		transition: color 0.15s, transform 0.15s var(--ease-snap);
+	}
+
+	.back-link:hover {
+		color: var(--text-1);
+		transform: translateX(-2px);
 	}
 
 	h1 {
-		font-size: 1.5rem;
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 1.6rem;
+		letter-spacing: 0.01em;
 		margin: 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.live-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 3px 10px;
+		border-radius: 999px;
+		background: var(--good-dim);
+		color: var(--good);
+		font-family: var(--font-mono);
+		font-size: 0.62rem;
+		text-transform: uppercase;
+		letter-spacing: 0.12em;
+		flex-shrink: 0;
+	}
+
+	.live-pill.offline {
+		background: var(--warn-dim);
+		color: var(--warn);
+	}
+
+	.live-pill-dot {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: currentColor;
+		animation: pulse-dot 2s ease-in-out infinite;
 	}
 
 	.header-actions {
@@ -536,97 +591,163 @@
 	}
 
 	.nerd-btn {
-		padding: 4px 8px;
-		border: 1px solid #555;
-		border-radius: 6px;
+		padding: 6px 10px;
+		border: 1px solid var(--line-2);
+		border-radius: var(--radius-s);
 		background: transparent;
-		color: #888;
+		color: var(--text-3);
 		cursor: pointer;
 		font-size: 1rem;
 		line-height: 1;
+		transition: color 0.15s, border-color 0.15s, box-shadow 0.2s;
+	}
+
+	.nerd-btn:hover {
+		color: var(--text-2);
 	}
 
 	.nerd-btn.active {
-		color: #4ade80;
-		border-color: #4ade80;
+		color: var(--accent);
+		border-color: var(--accent);
+		box-shadow: 0 0 12px -4px var(--accent-glow);
 	}
 
 	.leave-btn {
 		padding: 6px 16px;
-		border: 1px solid #555;
-		border-radius: 6px;
-		background: transparent;
-		color: #ccc;
-		cursor: pointer;
 	}
 
+	/* --- Start screen --------------------------------------- */
+
 	.start-prompt {
+		position: relative;
 		text-align: center;
-		padding: 3rem 1rem;
+		padding: 4.5rem 1rem 4rem;
+		animation: rise-in 0.5s var(--ease-snap) both;
+	}
+
+	.start-glow {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: radial-gradient(50% 55% at 50% 40%, var(--accent-dim) 0%, transparent 70%);
+	}
+
+	.start-eyebrow {
+		font-family: var(--font-mono);
+		font-size: 0.65rem;
+		text-transform: uppercase;
+		letter-spacing: 0.2em;
+		color: var(--accent);
+		margin: 0 0 0.5rem;
+	}
+
+	.start-title {
+		font-family: var(--font-display);
+		font-size: 2rem;
+		font-weight: 600;
+		margin: 0 0 1.5rem;
 	}
 
 	.start-btn {
-		padding: 12px 32px;
-		font-size: 1.1rem;
-		border: none;
-		border-radius: 8px;
-		background: #4ade80;
-		color: #000;
-		font-weight: 600;
-		cursor: pointer;
-		margin: 1rem 0;
+		font-size: 1.05rem;
+		padding: 0.8rem 2.2rem;
+		border-radius: 999px;
+	}
+
+	.start-icon {
+		font-size: 0.7rem;
+		animation: pulse-dot 2s ease-in-out infinite;
 	}
 
 	.hint {
-		font-size: 0.8rem;
-		color: #666;
+		font-size: 0.78rem;
+		color: var(--text-3);
+		margin-top: 1.25rem;
 	}
 
+	/* --- Pipeline status states ------------------------------ */
+
 	.status-message {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1rem;
 		text-align: center;
-		padding: 3rem;
-		color: #999;
+		padding: 4rem 1rem;
+		color: var(--text-2);
+	}
+
+	.tuning-bars {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+		height: 24px;
+	}
+
+	.tuning-bars span {
+		width: 4px;
+		height: 100%;
+		border-radius: 2px;
+		background: var(--accent);
+		animation: wave 0.9s ease-in-out infinite;
+	}
+
+	.tuning-bars span:nth-child(2) {
+		animation-delay: 0.15s;
+	}
+
+	.tuning-bars span:nth-child(3) {
+		animation-delay: 0.3s;
 	}
 
 	.error-message {
 		text-align: center;
-		padding: 2rem;
-		color: #f87171;
+		padding: 2.5rem 1.5rem;
+		border: 1px solid var(--bad);
+		background: var(--bad-dim);
+		border-radius: var(--radius-l);
+		margin: 2rem 0;
+	}
+
+	.error-title {
+		color: var(--bad);
+		font-weight: 600;
+		font-size: 1.05rem;
+		margin: 0 0 0.5rem;
 	}
 
 	.error-detail {
-		font-family: monospace;
+		font-family: var(--font-mono);
 		font-size: 0.75rem;
-		color: #f8717199;
+		color: var(--bad);
+		opacity: 0.75;
 		margin: 0.25rem 0;
 	}
 
-	.error-message button {
-		margin-top: 0.5rem;
-		padding: 6px 16px;
-		border: 1px solid #f87171;
-		border-radius: 6px;
-		background: transparent;
-		color: #f87171;
-		cursor: pointer;
+	.error-help {
+		color: var(--text-2);
+		font-size: 0.85rem;
+		margin: 0.5rem 0 1rem;
 	}
 
 	.transport-warning {
 		text-align: center;
-		padding: 0.5rem 1rem;
+		padding: 0.6rem 1rem;
 		margin-bottom: 1rem;
-		background: #3a3a1a;
-		color: #facc15;
-		border-radius: 6px;
-		font-size: 0.85rem;
+		background: var(--warn-dim);
+		border: 1px solid rgba(242, 201, 76, 0.25);
+		color: var(--warn);
+		border-radius: var(--radius-m);
+		font-size: 0.83rem;
 	}
 
 	.disconnect-message {
 		text-align: center;
-		padding: 2rem;
-		color: #facc15;
-		background: #3a3a1a;
-		border-radius: 8px;
+		padding: 2.5rem 1.5rem;
+		color: var(--warn);
+		background: var(--warn-dim);
+		border: 1px solid rgba(242, 201, 76, 0.25);
+		border-radius: var(--radius-l);
 		margin: 2rem 0;
 	}
 
@@ -638,17 +759,22 @@
 	}
 
 	.reconnect-btn {
-		padding: 8px 20px;
-		border: 1px solid #facc15;
-		border-radius: 6px;
+		border-color: var(--warn);
+		color: var(--warn);
 		background: transparent;
-		color: #facc15;
-		cursor: pointer;
-		font-weight: 600;
 	}
 
-	.disconnect-message .leave-btn {
-		padding: 8px 20px;
+	.reconnect-btn:hover {
+		background: var(--warn-dim);
 	}
 
+	/* --- Nerd zone ------------------------------------------- */
+
+	.nerd-zone {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		margin-top: 1.25rem;
+		animation: rise-in 0.3s var(--ease-snap) both;
+	}
 </style>

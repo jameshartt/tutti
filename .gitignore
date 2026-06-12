@@ -23,3 +23,4 @@ caddy-root.crt
 # OS
 .DS_Store
 Thumbs.db
+server/build-audit/

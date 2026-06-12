@@ -1,30 +1,14 @@
 <script lang="ts">
-	import { audioStats, type AudioStats } from '../stores/audio-stats.js';
+	import { audioStats } from '../stores/audio-stats.js';
 	import { getLatencyWarning } from '../audio/context.js';
 	import { settings } from '../stores/settings.js';
 
 	let { transportDesc, transportConnected }: { transportDesc: string; transportConnected: boolean } =
 		$props();
 
-	let stats: AudioStats = $state({
-		playbackUnderruns: 0,
-		playbackPartialFrames: 0,
-		playbackTotalFrames: 0,
-		playbackFillLevel: 0,
-		playbackPrebuffering: false,
-		captureDroppedFrames: 0,
-		captureTotalFrames: 0,
-		captureFillLevel: 0,
-		packetsSent: 0,
-		packetsReceived: 0,
-		networkRTT: 0,
-		networkOneWayMs: 0,
-		sampleRate: 0,
-		contextState: 'suspended',
-		hardwareOutputMs: 0
-	});
-
-	audioStats.subscribe((s) => (stats = s));
+	// $store auto-subscriptions — cleaned up automatically (no leaks)
+	let stats = $derived($audioStats);
+	let prebufferFrames = $derived($settings.prebufferFrames);
 
 	let latencyWarning = $derived(stats.hardwareOutputMs > 15 ? getLatencyWarning() : null);
 	let copied = $state(false);
@@ -44,19 +28,16 @@
 		return Math.round((fillLevel / BUFFER_CAPACITY) * 100);
 	}
 
-	function fillColor(fillLevel: number): string {
+	function fillClass(fillLevel: number): string {
 		const pct = fillPercent(fillLevel);
-		if (pct > 50) return '#4ade80';
-		if (pct > 20) return '#facc15';
-		return '#f87171';
+		if (pct > 50) return 'fill-good';
+		if (pct > 20) return 'fill-warn';
+		return 'fill-bad';
 	}
 
 	function sampleRateWarning(rate: number): boolean {
 		return rate > 0 && rate !== 48000;
 	}
-
-	let prebufferFrames = $state(0);
-	settings.subscribe((s) => (prebufferFrames = s.prebufferFrames));
 
 	const prebufferPresets = [
 		{ label: 'None', value: 0, hint: '0ms' },
@@ -71,34 +52,42 @@
 </script>
 
 <div class="diagnostics">
+	<div class="panel-titlebar">
+		<span class="titlebar-dot"></span>
+		<span class="titlebar-label">diagnostics</span>
+		<span class="titlebar-status" class:ok={transportConnected}>
+			{transportConnected ? 'link up' : 'link down'}
+		</span>
+	</div>
+
 	{#if latencyWarning}
 		<div class="latency-warning">
-			<div class="warning-title">High Hardware Latency</div>
+			<div class="warning-title">&#9888; High hardware latency</div>
 			<p class="warning-message">{latencyWarning.message}</p>
 			<pre class="warning-instructions">{latencyWarning.instructions}</pre>
 			{#if latencyWarning.command}
 				<button class="copy-btn" onclick={copyCommand}>
-					{copied ? 'Copied!' : 'Copy command'}
+					{copied ? 'Copied ✓' : 'Copy command'}
 				</button>
 			{/if}
 		</div>
 	{/if}
 
 	<div class="section">
-		<div class="section-title">Buffer Health</div>
+		<div class="section-title">Buffer health</div>
 		<div class="buffer-row">
 			<span class="label">Playback</span>
 			<div class="bar-container">
 				<div
-					class="bar-fill"
-					style="width: {fillPercent(stats.playbackFillLevel)}%; background: {fillColor(stats.playbackFillLevel)}"
+					class="bar-fill {fillClass(stats.playbackFillLevel)}"
+					style="width: {fillPercent(stats.playbackFillLevel)}%"
 				></div>
 			</div>
 			<span class="value">{fillPercent(stats.playbackFillLevel)}%</span>
 		</div>
 		<div class="stat-row">
-			<span>Underruns: {stats.playbackUnderruns}</span>
-			<span>Partial: {stats.playbackPartialFrames}</span>
+			<span>underruns <b>{stats.playbackUnderruns}</b></span>
+			<span>partial <b>{stats.playbackPartialFrames}</b></span>
 			{#if stats.playbackPrebuffering}<span class="warn">PREBUFFERING</span>{/if}
 		</div>
 		<div class="prebuffer-row">
@@ -115,141 +104,235 @@
 				{/each}
 			</div>
 		</div>
-		<p class="prebuffer-hint">Seeing underruns? Increase the pre-buffer. This adds latency but improves stability.</p>
+		<p class="prebuffer-hint">Seeing underruns? Increase the pre-buffer — adds latency, improves stability.</p>
 		<div class="buffer-row">
 			<span class="label">Capture</span>
 			<div class="bar-container">
 				<div
-					class="bar-fill"
-					style="width: {fillPercent(stats.captureFillLevel)}%; background: {fillColor(stats.captureFillLevel)}"
+					class="bar-fill {fillClass(stats.captureFillLevel)}"
+					style="width: {fillPercent(stats.captureFillLevel)}%"
 				></div>
 			</div>
 			<span class="value">{fillPercent(stats.captureFillLevel)}%</span>
 		</div>
 		<div class="stat-row">
-			<span>Dropped: {stats.captureDroppedFrames}</span>
+			<span>dropped <b>{stats.captureDroppedFrames}</b></span>
 		</div>
 	</div>
 
-	<div class="section">
-		<div class="section-title">Transport</div>
-		<table>
-			<tbody>
-				<tr>
-					<td>Type</td>
-					<td>{transportDesc || 'none'}</td>
-				</tr>
-				<tr>
-					<td>Connected</td>
-					<td>{transportConnected ? 'yes' : 'no'}</td>
-				</tr>
-				<tr>
-					<td>Packets sent</td>
-					<td>{stats.packetsSent}</td>
-				</tr>
-				<tr>
-					<td>Packets received</td>
-					<td>{stats.packetsReceived}</td>
-				</tr>
-			</tbody>
-		</table>
-	</div>
+	<div class="section-grid">
+		<div class="section">
+			<div class="section-title">Transport</div>
+			<table>
+				<tbody>
+					<tr>
+						<td>type</td>
+						<td>{transportDesc || 'none'}</td>
+					</tr>
+					<tr>
+						<td>connected</td>
+						<td class:good={transportConnected} class:warn={!transportConnected}>
+							{transportConnected ? 'yes' : 'no'}
+						</td>
+					</tr>
+					<tr>
+						<td>pkts sent</td>
+						<td>{stats.packetsSent}</td>
+					</tr>
+					<tr>
+						<td>pkts recv</td>
+						<td>{stats.packetsReceived}</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
 
-	<div class="section">
-		<div class="section-title">Audio Context</div>
-		<table>
-			<tbody>
-				<tr>
-					<td>Sample rate</td>
-					<td class:warn={sampleRateWarning(stats.sampleRate)}>
-						{stats.sampleRate || '—'} Hz
-						{#if sampleRateWarning(stats.sampleRate)}(resampling?){/if}
-					</td>
-				</tr>
-				<tr>
-					<td>State</td>
-					<td>{stats.contextState}</td>
-				</tr>
-			</tbody>
-		</table>
+		<div class="section">
+			<div class="section-title">Audio context</div>
+			<table>
+				<tbody>
+					<tr>
+						<td>sample rate</td>
+						<td class:warn={sampleRateWarning(stats.sampleRate)}>
+							{stats.sampleRate || '—'} Hz
+							{#if sampleRateWarning(stats.sampleRate)}(resampling?){/if}
+						</td>
+					</tr>
+					<tr>
+						<td>state</td>
+						<td class:good={stats.contextState === 'running'}>{stats.contextState}</td>
+					</tr>
+					<tr>
+						<td>hw output</td>
+						<td class:warn={stats.hardwareOutputMs > 15}>{stats.hardwareOutputMs.toFixed(1)} ms</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
 	</div>
 </div>
 
 <style>
 	.diagnostics {
-		margin-top: 1rem;
-		padding: 0.75rem;
-		border: 1px solid #333;
-		border-radius: 6px;
-		font-family: monospace;
+		border: 1px solid var(--line-1);
+		border-radius: var(--radius-m);
+		background: #080606;
+		font-family: var(--font-mono);
 		font-size: 0.7rem;
-		color: #aaa;
+		color: var(--text-2);
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		overflow: hidden;
+	}
+
+	/* Terminal-style title bar */
+	.panel-titlebar {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.45rem 0.75rem;
+		background: var(--bg-1);
+		border-bottom: 1px solid var(--line-1);
+	}
+
+	.titlebar-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--accent);
+		box-shadow: 0 0 6px var(--accent-glow);
+	}
+
+	.titlebar-label {
+		text-transform: uppercase;
+		letter-spacing: 0.14em;
+		font-size: 0.62rem;
+		color: var(--text-3);
+	}
+
+	.titlebar-status {
+		margin-left: auto;
+		font-size: 0.6rem;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		color: var(--warn);
+	}
+
+	.titlebar-status.ok {
+		color: var(--good);
+	}
+
+	.section {
+		padding: 0.65rem 0.75rem;
+	}
+
+	.section + .section,
+	.section-grid {
+		border-top: 1px solid var(--line-1);
+	}
+
+	.section-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+	}
+
+	.section-grid .section + .section {
+		border-top: none;
+		border-left: 1px solid var(--line-1);
+	}
+
+	@media (max-width: 480px) {
+		.section-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.section-grid .section + .section {
+			border-left: none;
+			border-top: 1px solid var(--line-1);
+		}
 	}
 
 	.section-title {
 		font-weight: 600;
-		color: #ccc;
-		margin-bottom: 0.35rem;
-		font-size: 0.72rem;
+		color: var(--text-3);
+		margin-bottom: 0.45rem;
+		font-size: 0.6rem;
 		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		letter-spacing: 0.14em;
 	}
 
 	.buffer-row {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		margin-bottom: 0.15rem;
+		margin-bottom: 0.25rem;
 	}
 
 	.buffer-row .label {
-		width: 60px;
+		width: 64px;
 		flex-shrink: 0;
+		color: var(--text-3);
 	}
 
 	.bar-container {
 		flex: 1;
 		height: 8px;
-		background: #222;
+		background: #121010;
 		border-radius: 4px;
+		border: 1px solid var(--line-1);
 		overflow: hidden;
 	}
 
 	.bar-fill {
 		height: 100%;
-		border-radius: 4px;
-		transition: width 0.2s ease;
+		border-radius: 3px;
+		transition: width 0.2s ease, background 0.3s;
+	}
+
+	.fill-good {
+		background: linear-gradient(90deg, rgba(94, 224, 138, 0.5), var(--good));
+	}
+
+	.fill-warn {
+		background: linear-gradient(90deg, rgba(242, 201, 76, 0.5), var(--warn));
+	}
+
+	.fill-bad {
+		background: linear-gradient(90deg, rgba(255, 107, 94, 0.5), var(--bad));
 	}
 
 	.buffer-row .value {
-		width: 32px;
+		width: 36px;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+		color: var(--text-1);
 	}
 
 	.stat-row {
 		display: flex;
 		gap: 1rem;
-		margin-bottom: 0.25rem;
-		padding-left: 60px;
-		font-size: 0.65rem;
-		color: #888;
+		margin-bottom: 0.35rem;
+		padding-left: 72px;
+		font-size: 0.64rem;
+		color: var(--text-3);
+	}
+
+	.stat-row b {
+		color: var(--text-1);
+		font-weight: 600;
 	}
 
 	.prebuffer-row {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		margin-top: 0.35rem;
-		margin-bottom: 0.15rem;
+		margin: 0.4rem 0 0.2rem;
 	}
 
 	.prebuffer-row .label {
-		width: 60px;
+		width: 64px;
 		flex-shrink: 0;
+		color: var(--text-3);
 	}
 
 	.preset-group {
@@ -258,14 +341,15 @@
 	}
 
 	.preset-btn {
-		padding: 2px 8px;
-		border: 1px solid #555;
+		padding: 3px 9px;
+		border: 1px solid var(--line-2);
 		background: transparent;
-		color: #888;
+		color: var(--text-3);
 		cursor: pointer;
 		font-size: 0.62rem;
-		font-family: monospace;
+		font-family: var(--font-mono);
 		line-height: 1.4;
+		transition: all 0.15s;
 	}
 
 	.preset-btn:first-child {
@@ -280,28 +364,32 @@
 		border-left: none;
 	}
 
+	.preset-btn:hover {
+		color: var(--text-1);
+	}
+
 	.preset-btn.active {
-		background: #4ade8030;
-		color: #4ade80;
-		border-color: #4ade80;
+		background: var(--accent-dim);
+		color: var(--accent);
+		border-color: var(--accent);
 	}
 
 	.preset-btn.active + .preset-btn {
-		border-left-color: #4ade80;
+		border-left-color: var(--accent);
 	}
 
 	.preset-hint {
 		margin-left: 3px;
 		opacity: 0.6;
-		font-size: 0.58rem;
+		font-size: 0.56rem;
 	}
 
 	.prebuffer-hint {
-		margin: 0 0 0.25rem;
-		padding-left: 60px;
+		margin: 0.25rem 0 0.5rem;
+		padding-left: 72px;
 		font-size: 0.6rem;
-		color: #666;
-		line-height: 1.3;
+		color: var(--text-3);
+		line-height: 1.4;
 	}
 
 	table {
@@ -310,65 +398,73 @@
 	}
 
 	td {
-		padding: 1px 8px 1px 0;
+		padding: 2px 8px 2px 0;
+		color: var(--text-3);
 	}
 
 	td:last-child {
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+		color: var(--text-1);
 	}
 
-	.warn {
-		color: #facc15;
+	td.good {
+		color: var(--good);
+	}
+
+	.warn,
+	td.warn {
+		color: var(--warn);
 	}
 
 	.latency-warning {
-		background: #3a3a1a;
-		border: 1px solid #facc15;
-		border-radius: 6px;
-		padding: 0.6rem 0.75rem;
+		background: var(--warn-dim);
+		border-bottom: 1px solid rgba(242, 201, 76, 0.3);
+		padding: 0.65rem 0.75rem;
 	}
 
 	.warning-title {
 		font-weight: 600;
-		color: #facc15;
-		font-size: 0.72rem;
+		color: var(--warn);
+		font-size: 0.68rem;
 		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		letter-spacing: 0.08em;
 		margin-bottom: 0.3rem;
 	}
 
 	.warning-message {
-		color: #ccc;
+		color: var(--text-2);
 		margin: 0 0 0.4rem;
-		font-size: 0.68rem;
+		font-size: 0.66rem;
 		line-height: 1.4;
 	}
 
 	.warning-instructions {
-		background: #1a1a1a;
+		background: #0a0808;
+		border: 1px solid var(--line-1);
 		border-radius: 4px;
 		padding: 0.5rem;
 		margin: 0 0 0.4rem;
 		font-size: 0.62rem;
 		line-height: 1.5;
-		color: #aaa;
+		color: var(--text-2);
 		white-space: pre-wrap;
 		overflow-x: auto;
 	}
 
 	.copy-btn {
 		padding: 3px 10px;
-		border: 1px solid #facc15;
+		border: 1px solid var(--warn);
 		border-radius: 4px;
 		background: transparent;
-		color: #facc15;
+		color: var(--warn);
 		cursor: pointer;
 		font-size: 0.62rem;
-		font-family: monospace;
+		font-family: var(--font-mono);
+		transition: background 0.15s;
 	}
 
 	.copy-btn:hover {
-		background: #facc1520;
+		background: var(--warn-dim);
 	}
 </style>

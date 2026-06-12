@@ -1,10 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
-#include <atomic>
+#include <unordered_map>
 
 #include "rooms/room_manager.h"
 
@@ -66,6 +69,10 @@ private:
     HttpResponse handle_vacate_request(const std::string& room_name,
                                        const std::string& remote_ip);
 
+    /// Per-IP fixed-window rate limit for mutating (POST) endpoints.
+    /// Returns false when the caller has exceeded the budget.
+    bool check_rate_limit(const std::string& ip);
+
     std::shared_ptr<RoomManager> room_manager_;
     std::string hostname_;
     uint16_t wt_port_;
@@ -73,6 +80,15 @@ private:
     int server_fd_ = -1;
     std::thread accept_thread_;
     std::atomic<bool> running_{false};
+
+    // Rate limiting state: ip → {window start, request count}
+    struct RateBucket {
+        std::chrono::steady_clock::time_point window_start;
+        int count = 0;
+    };
+    std::unordered_map<std::string, RateBucket> rate_buckets_;
+    std::mutex rate_mutex_;
+    static constexpr int kMaxPostsPerMinute = 60;
 };
 
 } // namespace tutti

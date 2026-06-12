@@ -1,10 +1,10 @@
 #include "room_manager.h"
 #include "room_names.h"
+#include "util/secure_random.h"
 
 #include <algorithm>
 #include <iostream>
 #include <nlohmann/json.hpp>
-#include <random>
 #include <sstream>
 
 namespace tutti {
@@ -110,14 +110,11 @@ RoomManager::VacateResult RoomManager::vacate_request(
         vacate_cooldowns_[key] = std::chrono::steady_clock::now();
     }
 
-    // Send vacate notification to all participants
+    // Send vacate notification to all participants.
+    // (Previously this loop had an empty body and the notice was
+    // silently never delivered.)
     nlohmann::json msg = {{"type", "vacate_request"}};
-    std::string msg_str = msg.dump();
-    // Access participants through the room
-    // The room will broadcast to all participants
-    for (const auto& p : room->get_participants()) {
-        // We need the session - room handles this internally
-    }
+    room->broadcast_control(msg.dump());
 
     return VacateResult::Sent;
 }
@@ -158,17 +155,28 @@ void RoomManager::reaper_thread_func() {
         for (auto& room : snapshot) {
             room->reap_stale_participants();
         }
+
+        // Drop expired vacate cooldowns so the map can't grow unboundedly
+        // (each unique source-IP:room pair used to leak an entry forever).
+        {
+            std::lock_guard<std::mutex> lock(vacate_mutex_);
+            auto now = std::chrono::steady_clock::now();
+            for (auto it = vacate_cooldowns_.begin();
+                 it != vacate_cooldowns_.end();) {
+                if (now - it->second >= kVacateCooldown) {
+                    it = vacate_cooldowns_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
     }
 }
 
 std::string RoomManager::generate_id() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<uint64_t> dist;
-
-    std::ostringstream oss;
-    oss << std::hex << dist(gen) << dist(gen);
-    return oss.str();
+    // 128-bit token from the OS CSPRNG. Participant IDs are bearer
+    // tokens for transport binding, so they must be unguessable.
+    return secure_random_hex(16);
 }
 
 } // namespace tutti

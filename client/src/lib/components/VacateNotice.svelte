@@ -4,17 +4,29 @@
 
 {#if visible}
 	<div class="vacate-notice" role="alert">
-		A musician is waiting to practise
+		<span class="notice-icon" aria-hidden="true">&#9834;</span>
+		A musician is waiting to practise — wrap up when you can
 	</div>
 {/if}
 
 <style>
 	.vacate-notice {
-		background: #3a3a1a;
-		color: #facc15;
-		padding: 0.5rem 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		background: var(--warn-dim);
+		border: 1px solid rgba(242, 201, 76, 0.3);
+		color: var(--warn);
+		padding: 0.6rem 1rem;
+		margin-bottom: 0.75rem;
 		text-align: center;
 		font-size: 0.85rem;
-		border-bottom: 1px solid #555;
+		border-radius: var(--radius-m);
+		animation: slide-down 0.35s var(--ease-snap) both;
+	}
+
+	.notice-icon {
+		animation: pulse-dot 1.6s ease-in-out infinite;
 	}
 </style>

@@ -2,9 +2,10 @@
 
 #include <cstring>
 #include <iostream>
-#include <random>
 #include <sstream>
 #include <unistd.h>
+
+#include "util/secure_random.h"
 
 namespace tutti {
 
@@ -33,12 +34,9 @@ AudioPacket AudioPacket::deserialize(const uint8_t* buf, size_t len) {
 
 namespace {
 std::string generate_session_id() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<uint64_t> dist;
-    std::ostringstream oss;
-    oss << "wt-" << std::hex << dist(gen);
-    return oss.str();
+    // CSPRNG-backed (the old shared std::mt19937 was predictable and
+    // racy across QUIC worker threads).
+    return "wt-" + secure_random_hex(16);
 }
 } // namespace
 

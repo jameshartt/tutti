@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -86,6 +87,15 @@ void HttpServer::stop() {
 }
 
 void HttpServer::handle_connection(int client_fd) {
+    // Requests are handled inline on the accept thread, so a slow or
+    // malicious client must not be able to stall the server: bound both
+    // the time we will wait for bytes and the total request size.
+    constexpr size_t kMaxRequestBytes = 64 * 1024;
+    timeval timeout{};
+    timeout.tv_sec = 5;
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
     std::string data;
     char buf[4096];
 
@@ -98,15 +108,37 @@ void HttpServer::handle_connection(int client_fd) {
         if (n <= 0) break;
         data.append(buf, n);
 
+        if (data.size() > kMaxRequestBytes) {
+            // Oversized request — refuse rather than buffering forever.
+            const char* resp =
+                "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n";
+            send(client_fd, resp, strlen(resp), 0);
+            close(client_fd);
+            return;
+        }
+
         if (header_end == std::string::npos) {
             header_end = data.find("\r\n\r\n");
             if (header_end != std::string::npos) {
-                // Parse Content-Length from headers
+                // Parse Content-Length from headers. stoul throws on
+                // garbage / overflow, which would take down the whole
+                // process — parse defensively and cap the value.
                 auto cl_pos = data.find("Content-Length: ");
                 if (cl_pos == std::string::npos)
                     cl_pos = data.find("content-length: ");
                 if (cl_pos != std::string::npos && cl_pos < header_end) {
-                    content_length = std::stoul(data.substr(cl_pos + 16));
+                    try {
+                        content_length = std::stoul(data.substr(cl_pos + 16));
+                    } catch (...) {
+                        content_length = 0;
+                    }
+                    if (content_length > kMaxRequestBytes) {
+                        const char* resp =
+                            "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n";
+                        send(client_fd, resp, strlen(resp), 0);
+                        close(client_fd);
+                        return;
+                    }
                 }
                 header_end += 4; // skip past \r\n\r\n
             }
@@ -143,20 +175,76 @@ void HttpServer::handle_connection(int client_fd) {
 
     auto resp = route(req);
 
-    // Build HTTP response
+    // Build HTTP response.
+    // No CORS headers: the API is only ever reached same-origin through
+    // the reverse proxy (Caddy in prod, Vite in dev). The previous
+    // Access-Control-Allow-Origin: * invited cross-site abuse.
     std::ostringstream http_resp;
-    http_resp << "HTTP/1.1 " << resp.status << " OK\r\n"
+    http_resp << "HTTP/1.1 " << resp.status << " "
+              << (resp.status < 300 ? "OK" : "Error") << "\r\n"
               << "Content-Type: " << resp.content_type << "\r\n"
               << "Content-Length: " << resp.body.size() << "\r\n"
-              << "Access-Control-Allow-Origin: *\r\n"
-              << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-              << "Access-Control-Allow-Headers: Content-Type\r\n"
+              << "X-Content-Type-Options: nosniff\r\n"
+              << "X-Frame-Options: DENY\r\n"
+              << "Cache-Control: no-store\r\n"
+              << "Connection: close\r\n"
               << "\r\n"
               << resp.body;
 
     std::string response = http_resp.str();
     send(client_fd, response.data(), response.size(), 0);
     close(client_fd);
+}
+
+namespace {
+
+/// Room names are pre-defined, but validate anyway so future dynamic
+/// rooms (or crafted URLs) can't smuggle odd characters into logs,
+/// JSON, or map keys.
+bool is_valid_room_name(const std::string& name) {
+    if (name.empty() || name.size() > 64) return false;
+    for (unsigned char c : name) {
+        if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') return false;
+    }
+    return true;
+}
+
+/// Aliases are echoed to every other client in the room: enforce the
+/// same 32-char limit as the UI and strip control characters.
+std::string sanitize_alias(const std::string& alias) {
+    std::string out;
+    out.reserve(alias.size());
+    for (unsigned char c : alias) {
+        if (c >= 0x20 && c != 0x7f) out.push_back(static_cast<char>(c));
+        if (out.size() >= 32) break;
+    }
+    if (out.empty()) out = "Anonymous";
+    return out;
+}
+
+} // namespace
+
+bool HttpServer::check_rate_limit(const std::string& ip) {
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(rate_mutex_);
+
+    // Opportunistic cleanup so the map can't grow without bound.
+    if (rate_buckets_.size() > 4096) {
+        for (auto it = rate_buckets_.begin(); it != rate_buckets_.end();) {
+            if (now - it->second.window_start > std::chrono::minutes(2)) {
+                it = rate_buckets_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    auto& bucket = rate_buckets_[ip];
+    if (now - bucket.window_start >= std::chrono::minutes(1)) {
+        bucket.window_start = now;
+        bucket.count = 0;
+    }
+    return ++bucket.count <= kMaxPostsPerMinute;
 }
 
 HttpServer::HttpResponse HttpServer::route(const HttpRequest& req) {
@@ -192,6 +280,16 @@ HttpServer::HttpResponse HttpServer::route(const HttpRequest& req) {
         }
         std::string room_name = rest.substr(0, slash);
         std::string action = rest.substr(slash + 1);
+
+        if (!is_valid_room_name(room_name)) {
+            return {400, "application/json", R"({"error":"invalid_room_name"})"};
+        }
+
+        // Mutating endpoints are rate-limited per source IP (join spam,
+        // password brute-force, vacate abuse).
+        if (req.method == "POST" && !check_rate_limit(req.remote_ip)) {
+            return {429, "application/json", R"({"error":"rate_limited"})"};
+        }
 
         if (req.method == "POST" && action == "join") {
             return handle_join_room(room_name, req.body);
@@ -233,7 +331,7 @@ HttpServer::HttpResponse HttpServer::handle_join_room(
         return {400, "application/json", R"({"error":"invalid_json"})"};
     }
 
-    std::string alias = req.value("alias", "Anonymous");
+    std::string alias = sanitize_alias(req.value("alias", "Anonymous"));
     std::string password = req.value("password", "");
 
     // Create a placeholder session for HTTP-only join

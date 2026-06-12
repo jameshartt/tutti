@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import Room from '$lib/components/Room.svelte';
 	import JoinDialog from '$lib/components/JoinDialog.svelte';
 	import { roomState, joinRoom } from '$lib/stores/room.js';
@@ -9,12 +8,10 @@
 
 	let showJoinDialog = $state(true);
 	let joinError = $state('');
-	let joined = $state(false);
 	let requiresPassword = $state(false);
 
-	roomState.subscribe((s) => {
-		joined = s.currentRoom !== null;
-	});
+	// $roomState auto-subscription — cleaned up automatically (no leak)
+	let joined = $derived($roomState.currentRoom !== null);
 
 	// Navigate to lobby when room state resets (after handleLeave)
 	$effect(() => {
@@ -24,6 +21,7 @@
 	});
 
 	async function handleJoin(alias: string, password: string) {
+		joinError = '';
 		const result = await joinRoom(data.roomName, alias, password);
 		if (result.success) {
 			showJoinDialog = false;
@@ -47,7 +45,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.roomName} - Tutti</title>
+	<title>{data.roomName} — Tutti</title>
 </svelte:head>
 
 <main>
@@ -55,6 +53,7 @@
 		<JoinDialog
 			roomName={data.roomName}
 			{requiresPassword}
+			externalError={joinError}
 			onJoin={handleJoin}
 			onCancel={handleCancel}
 		/>
@@ -68,7 +67,5 @@
 <style>
 	main {
 		min-height: 100vh;
-		background: #0a0a0a;
-		color: #eee;
 	}
 </style>

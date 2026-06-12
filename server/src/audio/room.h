@@ -98,6 +98,9 @@ public:
     };
     std::vector<ParticipantInfo> get_participants() const;
 
+    /// Send a control message to every connected participant
+    void broadcast_control(const std::string& msg);
+
 private:
     /// RT mixer thread function
     void mixer_thread_func();

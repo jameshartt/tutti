@@ -2,8 +2,9 @@
 
 #include <iostream>
 #include <nlohmann/json.hpp>
-#include <random>
 #include <sstream>
+
+#include "util/secure_random.h"
 
 namespace tutti {
 
@@ -43,14 +44,9 @@ void WsSignaling::stop() {
 }
 
 void WsSignaling::on_ws_open(std::shared_ptr<rtc::WebSocket> ws) {
-    // Generate a session ID for this signaling connection
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<uint64_t> dist;
-
-    std::ostringstream oss;
-    oss << std::hex << dist(gen);
-    std::string session_id = oss.str();
+    // Session ID from the OS CSPRNG (the old shared std::mt19937 was
+    // predictable and racy across connection threads).
+    std::string session_id = secure_random_hex(16);
 
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
