@@ -30,7 +30,10 @@ COPY --from=build /src/assets/lobby-loop.pcm ./assets/lobby-loop.pcm
 COPY --from=build /src/build/_deps/libdatachannel-build/libdatachannel.so.0.24.1 /usr/local/lib/
 COPY --from=build /src/build/_deps/libwtf-build/output/libwtf.so.0.0.0 /usr/local/lib/
 COPY --from=build /src/build/_deps/libwtf-build/output/libmsquic.so.2.4.14 /usr/local/lib/
+COPY --from=build /src/build/_deps/opus-build/libopus.so.0.10.1 /usr/local/lib/
 RUN cd /usr/local/lib && \
+    ln -sf libopus.so.0.10.1 libopus.so.0 && \
+    ln -sf libopus.so.0.10.1 libopus.so && \
     ln -sf libdatachannel.so.0.24.1 libdatachannel.so.0.24 && \
     ln -sf libdatachannel.so.0.24.1 libdatachannel.so && \
     ln -sf libwtf.so.0.0.0 libwtf.so.0 && \
