@@ -189,8 +189,12 @@
 				rttMonitor = new RTTMonitor(transport);
 				rttMonitor.start();
 
-				// Listen for transport disconnect
+				// Listen for transport disconnect. Ignore events during an
+				// intentional leave — our own teardown fires 'disconnected'
+				// synchronously, and treating that as a connection loss would
+				// kick off the reconnect flow mid-departure.
 				transport.onStateChange((state) => {
+					if (leaving) return;
 					if (state === 'disconnected' || state === 'failed') {
 						handleTransportDisconnect();
 					}
@@ -556,8 +560,11 @@
 		capture = null;
 		playback?.stop();
 		playback = null;
-		activeTransport?.disconnect();
+		// Null before disconnect: disconnect() fires state callbacks
+		// synchronously, and re-entry must find no transport to act on
+		const transport = activeTransport;
 		activeTransport = null;
+		transport?.disconnect();
 		transportConnected = false;
 		codecMode = 'pcm';
 		codecWarning = false;

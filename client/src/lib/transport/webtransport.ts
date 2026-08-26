@@ -109,6 +109,10 @@ export class WebTransportTransport implements Transport {
 	}
 
 	private setState(state: TransportState): void {
+		// No-op on unchanged state. Callbacks fire synchronously, and a
+		// listener may respond to 'disconnected' by calling disconnect()
+		// again — without this guard that recurses until stack overflow.
+		if (this._state === state) return;
 		this._state = state;
 		for (const cb of this.stateCallbacks) {
 			cb(state);
