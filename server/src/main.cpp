@@ -1,4 +1,5 @@
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <execinfo.h>
 #include <fstream>
@@ -40,6 +41,12 @@ void signal_handler(int) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // Under Docker, stdout is a pipe → glibc block-buffers it, and sparse
+    // diagnostic lines ([ClientLog], room stats) sit invisible in a 4KB
+    // buffer for hours. Line-buffer both streams so logs appear as written.
+    std::setvbuf(stdout, nullptr, _IOLBF, 1 << 16);
+    std::setvbuf(stderr, nullptr, _IOLBF, 1 << 16);
+
     // Parse command line
     std::string bind_address = "0.0.0.0";
     uint16_t http_port = 8080;
