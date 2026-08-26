@@ -71,6 +71,17 @@ void SessionBinder::on_message(TransportSession* session,
                         room->set_mute(it->second.participant_id, source_id, muted);
                     }
                 }
+            } else if (type == "codec") {
+                // Weak-link downgrade / recovery upgrade, chosen client-side
+                auto codec_name = msg.value("codec", "");
+                if (codec_name == "opus" || codec_name == "pcm") {
+                    auto room = room_manager_->get_room(it->second.room_name);
+                    if (room) {
+                        room->set_participant_codec(
+                            it->second.participant_id,
+                            codec_name == "opus" ? Codec::Opus : Codec::Pcm);
+                    }
+                }
             } else if (type == "client_stats") {
                 // Client-side audio telemetry beacon (every ~10s). Logged so
                 // incidents are diagnosable from server logs after the fact.

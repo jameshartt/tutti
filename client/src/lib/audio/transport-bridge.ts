@@ -23,6 +23,9 @@ import {
 	type AudioPacket
 } from './types.js';
 import type { Transport } from '../transport/transport.js';
+import { OpusEncoderPipe, OpusDecoderPipe } from './opus.js';
+
+const OPUS_MAX_PAYLOAD = 240;
 
 export interface TransportBridgeOptions {
 	/** SharedArrayBuffer from capture pipeline (read from) */
@@ -52,6 +55,9 @@ export class TransportBridge {
 	private seqReordered = 0; // packets that arrived late/out of order
 	private loopbackEnabled = false;
 	private micMuted = false;
+	private codecMode: 'pcm' | 'opus' = 'pcm';
+	private opusEnc: OpusEncoderPipe | null = null;
+	private opusDec: OpusDecoderPipe | null = null;
 
 	// Pre-allocated buffers for zero-allocation on hot path (fallback only)
 	private readBuffer = new Int16Array(SAMPLES_PER_FRAME);
@@ -84,7 +90,15 @@ export class TransportBridge {
 			this.worker.onmessage = (event: MessageEvent) => {
 				const msg = event.data;
 				if (msg.type === 'packet') {
-					this.transport.sendDatagram(new Uint8Array(msg.data));
+					if (this.codecMode === 'opus' && this.opusEnc) {
+						// Feed the packet's PCM payload to the encoder; it emits
+						// framed Opus datagrams via its own callback
+						this.opusEnc.encode(
+							new Int16Array(msg.data, AUDIO_HEADER_SIZE, SAMPLES_PER_FRAME)
+						);
+					} else {
+						this.transport.sendDatagram(new Uint8Array(msg.data));
+					}
 					this.sendSequence++;
 				} else if (msg.type === 'loopback') {
 					this.playbackWriter.write(new Int16Array(msg.samples));
@@ -119,9 +133,33 @@ export class TransportBridge {
 		console.log('[TransportBridge] Using polling fallback (2ms interval)');
 	}
 
+	/**
+	 * Switch the outgoing wire codec. Incoming demux is stateless (by packet
+	 * size), so only the encoder needs managing. The caller is responsible
+	 * for telling the server via a {"type":"codec"} control message.
+	 */
+	setCodec(mode: 'pcm' | 'opus'): void {
+		if (mode === this.codecMode) return;
+		this.codecMode = mode;
+		if (mode === 'opus') {
+			this.opusEnc = new OpusEncoderPipe((pkt) => this.transport.sendDatagram(pkt));
+		} else {
+			this.opusEnc?.close();
+			this.opusEnc = null;
+		}
+	}
+
+	getCodec(): 'pcm' | 'opus' {
+		return this.codecMode;
+	}
+
 	/** Stop the bridge */
 	stop(): void {
 		this.running = false;
+		this.opusEnc?.close();
+		this.opusEnc = null;
+		this.opusDec?.close();
+		this.opusDec = null;
 
 		if (this.worker) {
 			this.worker.postMessage({ type: 'stop' });
@@ -174,14 +212,18 @@ export class TransportBridge {
 
 			// When muted, still drain the buffer but don't send over network
 			if (!this.micMuted) {
-				const packet: AudioPacket = {
-					sequence: this.sendSequence++,
-					timestamp: this.sendTimestamp,
-					samples: this.readBuffer
-				};
+				if (this.codecMode === 'opus' && this.opusEnc) {
+					this.opusEnc.encode(this.readBuffer.slice());
+					this.sendSequence++;
+				} else {
+					const packet: AudioPacket = {
+						sequence: this.sendSequence++,
+						timestamp: this.sendTimestamp,
+						samples: this.readBuffer
+					};
+					this.transport.sendDatagram(serializePacket(packet));
+				}
 				this.sendTimestamp += SAMPLES_PER_FRAME;
-
-				this.transport.sendDatagram(serializePacket(packet));
 			} else {
 				this.sendTimestamp += SAMPLES_PER_FRAME;
 			}
@@ -192,24 +234,34 @@ export class TransportBridge {
 		}
 	}
 
-	/** Handle incoming datagram: deserialize and write to playback ring buffer */
-	private handleIncoming(data: Uint8Array): void {
-		const packet = deserializePacket(data);
-		if (!packet) return;
-
-		// Track sequence continuity: gaps mean the server dropped mixed
-		// frames or the network lost packets — both audible as glitches.
+	/** Track sequence continuity: gaps mean the server dropped mixed
+	 *  frames or the network lost packets — both audible as glitches. */
+	private trackSequence(sequence: number): void {
 		if (this.lastRecvSequence >= 0) {
-			const delta = packet.sequence - this.lastRecvSequence;
+			const delta = sequence - this.lastRecvSequence;
 			if (delta > 1) {
 				this.seqGaps += delta - 1;
 			} else if (delta <= 0) {
 				this.seqReordered++;
 			}
 		}
-		if (packet.sequence > this.lastRecvSequence) {
-			this.lastRecvSequence = packet.sequence;
+		if (sequence > this.lastRecvSequence) {
+			this.lastRecvSequence = sequence;
 		}
+	}
+
+	/** Handle incoming datagram: stateless per-packet demux by size —
+	 *  exactly one PCM packet is PCM, a shorter framed datagram is Opus —
+	 *  so server codec switches can never garble the stream. */
+	private handleIncoming(data: Uint8Array): void {
+		if (data.byteLength !== AUDIO_PACKET_SIZE) {
+			this.handleIncomingOpus(data);
+			return;
+		}
+
+		const packet = deserializePacket(data);
+		if (!packet) return;
+		this.trackSequence(packet.sequence);
 
 		// While the loopback test runs, it owns the playback ring: mixing in
 		// network audio (e.g. the solo-room hold music) would double the
@@ -224,5 +276,31 @@ export class TransportBridge {
 		if (this.incomingCount === 1 || this.incomingCount % 375 === 0) {
 			console.log(`[TransportBridge] Received ${this.incomingCount} packets, latest seq=${packet.sequence}, ${data.byteLength} bytes`);
 		}
+	}
+
+	/** Opus datagram: 8B header (u32 seq, u32 timestamp-in-samples) + payload */
+	private handleIncomingOpus(data: Uint8Array): void {
+		if (
+			data.byteLength <= AUDIO_HEADER_SIZE ||
+			data.byteLength > AUDIO_HEADER_SIZE + OPUS_MAX_PAYLOAD
+		) {
+			return;
+		}
+		const dv = new DataView(data.buffer, data.byteOffset);
+		const sequence = dv.getUint32(0, true);
+		const timestamp = dv.getUint32(4, true);
+		this.trackSequence(sequence);
+
+		if (!this.opusDec) {
+			this.opusDec = new OpusDecoderPipe((samples) => {
+				if (!this.loopbackEnabled) {
+					this.playbackWriter.write(samples);
+				}
+			});
+		}
+		// slice() detaches from the transport's buffer (EncodedAudioChunk copies,
+		// but subarray views over reused receive buffers are risky cross-task)
+		this.opusDec.decode(timestamp, data.slice(AUDIO_HEADER_SIZE));
+		this.incomingCount++;
 	}
 }

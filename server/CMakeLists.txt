@@ -21,6 +21,8 @@ add_library(tutti-core STATIC
     src/transport/rtc_transport.h
     src/transport/session_binder.cpp
     src/transport/session_binder.h
+    src/audio/codec.cpp
+    src/audio/codec.h
     src/audio/mixer.cpp
     src/audio/mixer.h
     src/audio/room.cpp
@@ -45,6 +47,7 @@ target_link_libraries(tutti-core PUBLIC
     SPSCQueue
     nlohmann_json::nlohmann_json
     LibDataChannel::LibDataChannel
+    Opus::opus
     pthread
 )
 
@@ -64,6 +67,7 @@ if(TUTTI_BUILD_TESTS)
     add_executable(tutti-tests
         tests/mixer_test.cpp
         tests/lobby_loop_test.cpp
+        tests/codec_test.cpp
     )
     target_link_libraries(tutti-tests PRIVATE
         tutti-core

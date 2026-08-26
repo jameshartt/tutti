@@ -156,6 +156,12 @@
 						<td>{stats.packetsReceived}</td>
 					</tr>
 					<tr>
+						<td>codec</td>
+						<td class:warn={stats.codec === 'opus'}>
+							{stats.codec === 'opus' ? 'opus (weak link)' : 'pcm'}
+						</td>
+					</tr>
+					<tr>
 						<td>seq gaps</td>
 						<td class:warn={stats.seqGaps > 0}>{stats.seqGaps}</td>
 					</tr>

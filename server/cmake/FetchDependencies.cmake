@@ -38,6 +38,16 @@ FetchContent_Declare(
 set(NO_MEDIA ON CACHE BOOL "" FORCE)
 set(NO_WEBSOCKET OFF CACHE BOOL "" FORCE)
 
+# ── Opus (compressed audio mode for weak links) ─────────────────────────────
+FetchContent_Declare(
+    opus
+    GIT_REPOSITORY https://github.com/xiph/opus.git
+    GIT_TAG        v1.5.2
+    GIT_SHALLOW    TRUE
+)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+
 # ── Google Test (unit testing) ───────────────────────────────────────────────
 FetchContent_Declare(
     googletest
@@ -48,4 +58,4 @@ FetchContent_Declare(
 
 # Make dependencies available
 # libdatachannel must come first since it provides nlohmann_json
-FetchContent_MakeAvailable(libdatachannel SPSCQueue googletest)
+FetchContent_MakeAvailable(libdatachannel SPSCQueue opus googletest)

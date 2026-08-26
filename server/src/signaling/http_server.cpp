@@ -360,7 +360,9 @@ HttpServer::HttpResponse HttpServer::handle_room_stats(const std::string& room_n
         {"frames_skipped", s.frames_skipped},
         {"frames_out", s.frames_out},
         {"fast_path_forwards", s.fast_path_forwards},
-        {"lobby_loop_frames", s.lobby_loop_frames}
+        {"lobby_loop_frames", s.lobby_loop_frames},
+        {"opus_frames_in", s.opus_frames_in},
+        {"opus_frames_out", s.opus_frames_out}
     };
     return {200, "application/json", resp.dump()};
 }

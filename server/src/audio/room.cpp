@@ -165,7 +165,69 @@ void Room::remove_participant(const std::string& id) {
 
 void Room::on_audio_received(const std::string& participant_id,
                               const uint8_t* data, size_t len) {
-    if (len < kAudioPacketSize) return;
+    // Stateless per-packet demux: exactly/at-least one full PCM packet is
+    // PCM; a shorter datagram with a header is Opus (kOpusMaxPayload keeps
+    // the ranges disjoint). Anything else is garbage.
+    const bool is_pcm = (len >= kAudioPacketSize);
+    if (!is_pcm &&
+        (len <= kAudioHeaderSize || len > kAudioHeaderSize + kOpusMaxPayload)) {
+        return;
+    }
+
+    if (!is_pcm) {
+        // Opus input: decode to PCM, reframe to 128-sample mixer frames.
+        // No fast path — compressed participants always go through the
+        // mixer, which works in PCM internally.
+        std::shared_ptr<ParticipantCodecState> cs;
+        uint32_t count = 0;
+        {
+            std::lock_guard<std::mutex> lock(participants_mutex_);
+            auto it = participants_.find(participant_id);
+            if (it == participants_.end()) return;
+            it->second.last_audio_received_ns = now_ns();
+            recount_bound_locked();
+            count = bound_count_.load(std::memory_order_relaxed);
+            if (!it->second.codec_state) {
+                it->second.codec_state =
+                    std::make_shared<ParticipantCodecState>();
+            }
+            cs = it->second.codec_state;
+        }
+
+        // Decode outside the lock — a participant's datagrams arrive on a
+        // single connection, so their decoder is effectively single-threaded
+        uint32_t seq = 0;
+        std::memcpy(&seq, data, sizeof(seq));
+        int16_t pcm[kOpusFrameSamples];
+        int n = cs->decoder.decode(data + kAudioHeaderSize,
+                                   len - kAudioHeaderSize, pcm,
+                                   kOpusFrameSamples);
+        if (n <= 0) return;
+        opus_frames_in_.fetch_add(1, std::memory_order_relaxed);
+
+        cs->in_pending.insert(cs->in_pending.end(), pcm, pcm + n);
+        while (cs->in_pending.size() >= kSamplesPerFrame) {
+            AudioFrame frame;
+            frame.sequence = seq;
+            frame.timestamp = 0;
+            std::copy(cs->in_pending.begin(),
+                      cs->in_pending.begin() + kSamplesPerFrame,
+                      frame.samples.begin());
+            cs->in_pending.erase(cs->in_pending.begin(),
+                                 cs->in_pending.begin() + kSamplesPerFrame);
+            mixer_.push_input(participant_id, frame);
+        }
+
+        uint32_t received =
+            frames_received_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (count > 0 && received >= count) {
+#ifdef __linux__
+            uint64_t val = 1;
+            (void)::write(notify_fd_, &val, sizeof(val));
+#endif
+        }
+        return;
+    }
 
     // Fast path: exactly 2 BOUND participants → direct forwarding (bypass
     // mixer). Count only participants with an attached transport session:
@@ -185,7 +247,10 @@ void Room::on_audio_received(const std::string& participant_id,
         recount_bound_locked();
         if (bound_count_.load(std::memory_order_relaxed) == 2) {
             for (auto& [pid, p] : participants_) {
-                if (pid != participant_id && p.session) {
+                // Fast path is PCM-to-PCM only: an Opus listener needs the
+                // mixer's encode path, not a raw PCM copy
+                if (pid != participant_id && p.session &&
+                    p.codec == Codec::Pcm) {
                     target_id = pid;
                     target_session = p.session;
                     output_seq = p.output_sequence++;
@@ -248,6 +313,22 @@ void Room::on_audio_received(const std::string& participant_id,
         (void)::write(notify_fd_, &val, sizeof(val));
 #endif
     }
+}
+
+void Room::set_participant_codec(const std::string& id, Codec codec) {
+    std::lock_guard<std::mutex> lock(participants_mutex_);
+    auto it = participants_.find(id);
+    if (it == participants_.end()) return;
+    if (it->second.codec == codec) return;
+    it->second.codec = codec;
+    // Fresh state on every switch: encoder/decoder history from the old
+    // mode must not bleed into the new one
+    it->second.codec_state = (codec == Codec::Opus)
+        ? std::make_shared<ParticipantCodecState>()
+        : nullptr;
+    std::cout << "[Room:" << name_ << "] codec="
+              << (codec == Codec::Opus ? "opus" : "pcm")
+              << " participant=" << id << "\n";
 }
 
 void Room::set_gain(const std::string& listener_id,
@@ -610,7 +691,10 @@ void Room::service_lobby_loop(std::chrono::steady_clock::time_point now) {
         }
         loop_pos_ = (loop_pos_ + kSamplesPerFrame) % loop_len;
 
-        std::shared_ptr<TransportSession> session;
+        // Queue through the codec-aware path (an Opus listener on a weak
+        // link gets ~48kbps hold music instead of 800kbps PCM), then send
+        // outside the lock
+        pending_sends_.clear();
         {
             std::lock_guard<std::mutex> lock(participants_mutex_);
             auto it = participants_.find(loop_listener_id_);
@@ -618,19 +702,59 @@ void Room::service_lobby_loop(std::chrono::steady_clock::time_point now) {
                 loop_state_ = LoopState::Idle;
                 return;
             }
-            pkt.sequence = it->second.output_sequence++;
-            session = it->second.session;
+            queue_frame_locked(it->second, pkt.samples);
         }
-        uint8_t buf[kAudioPacketSize];
-        pkt.serialize(buf);
-        session->send_datagram(buf, kAudioPacketSize);
-        lobby_loop_frames_.fetch_add(1, std::memory_order_relaxed);
+        for (auto& ps : pending_sends_) {
+            if (ps.session) {
+                ps.session->send_datagram(ps.buf, ps.len);
+                lobby_loop_frames_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
 
         loop_next_send_ += frame_interval;
         // Fell far behind (stall)? Resync rather than bursting to catch up
         if (now - loop_next_send_ > std::chrono::milliseconds(100)) {
             loop_next_send_ = now;
         }
+    }
+}
+
+void Room::queue_frame_locked(Participant& p, const int16_t* samples) {
+    if (p.codec == Codec::Pcm || !p.codec_state) {
+        AudioPacket pkt;
+        pkt.sequence = p.output_sequence++;
+        pkt.timestamp = 0;
+        std::memcpy(pkt.samples, samples, kAudioPayloadSize);
+        PendingSend ps;
+        ps.session = p.session;
+        pkt.serialize(ps.buf);
+        ps.len = kAudioPacketSize;
+        pending_sends_.push_back(std::move(ps));
+        return;
+    }
+
+    // Opus: accumulate 128-sample frames, emit a packet per 480 samples
+    auto& cs = *p.codec_state;
+    cs.out_pending.insert(cs.out_pending.end(), samples,
+                          samples + kSamplesPerFrame);
+    while (cs.out_pending.size() >= kOpusFrameSamples) {
+        uint8_t payload[kOpusMaxPayload];
+        int n = cs.encoder.encode(cs.out_pending.data(), payload,
+                                  sizeof(payload));
+        cs.out_pending.erase(cs.out_pending.begin(),
+                             cs.out_pending.begin() + kOpusFrameSamples);
+        uint32_t ts = cs.out_timestamp;
+        cs.out_timestamp += kOpusFrameSamples;
+        if (n <= 0) continue;
+        PendingSend ps;
+        ps.session = p.session;
+        uint32_t seq = p.output_sequence++;
+        std::memcpy(ps.buf, &seq, sizeof(seq));
+        std::memcpy(ps.buf + 4, &ts, sizeof(ts));
+        std::memcpy(ps.buf + kAudioHeaderSize, payload, n);
+        ps.len = kAudioHeaderSize + static_cast<size_t>(n);
+        pending_sends_.push_back(std::move(ps));
+        opus_frames_out_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -644,12 +768,7 @@ void Room::send_outputs() {
             AudioFrame frame;
             if (mixer_.pop_output(id, frame)) {
                 participant.last_audio_sent_ns = now_ns();
-                frame.sequence = participant.output_sequence++;
-                PendingSend ps;
-                ps.session = participant.session;
-                auto pkt = frame.to_packet();
-                pkt.serialize(ps.buf);
-                pending_sends_.push_back(std::move(ps));
+                queue_frame_locked(participant, frame.samples.data());
             }
         }
     }
@@ -657,7 +776,7 @@ void Room::send_outputs() {
     // Send outside the lock
     for (auto& ps : pending_sends_) {
         if (ps.session) {
-            ps.session->send_datagram(ps.buf, kAudioPacketSize);
+            ps.session->send_datagram(ps.buf, ps.len);
             frames_out_.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -683,6 +802,8 @@ RoomAudioStats Room::audio_stats() const {
     s.frames_out = frames_out_.load(std::memory_order_relaxed);
     s.fast_path_forwards = fast_path_forwards_.load(std::memory_order_relaxed);
     s.lobby_loop_frames = lobby_loop_frames_.load(std::memory_order_relaxed);
+    s.opus_frames_in = opus_frames_in_.load(std::memory_order_relaxed);
+    s.opus_frames_out = opus_frames_out_.load(std::memory_order_relaxed);
     s.participants = participant_count();
     s.bound_participants = bound_count_.load(std::memory_order_relaxed);
     return s;

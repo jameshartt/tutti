@@ -9,7 +9,8 @@
 	import { roomState, leaveRoom, joinRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
-	import { audioStats, updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs } from '../stores/audio-stats.js';
+	import { audioStats, updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs, updateCodecMode } from '../stores/audio-stats.js';
+	import { opusSupported } from '../audio/opus.js';
 	import { startCapture, type CaptureHandle } from '../audio/capture.js';
 	import { startPlayback, type PlaybackHandle } from '../audio/playback.js';
 	import { TransportBridge } from '../audio/transport-bridge.js';
@@ -64,6 +65,17 @@
 	let errorDetail = $state('');
 	let transportConnected = $state(false);
 	let statsTimer: ReturnType<typeof setInterval> | null = null;
+
+	// Weak-link codec management
+	let codecMode = $state<'pcm' | 'opus'>('pcm');
+	let codecWarning = $state(false);
+	let opusAvailable = false;
+	const linkState = { prevRecv: 0, prevGaps: 0, badSince: 0, goodSince: 0, lastSwitch: 0 };
+
+	// Connect retry loop
+	let connectAttempt = $state(0);
+	let retryingConnect = $state(false);
+	let connectAborted = false;
 
 	// Phase 2: beforeunload — send leave beacon on tab close
 	function handleBeforeUnload() {
@@ -185,49 +197,78 @@
 				});
 			};
 
-			// Try preferred transport, fall back if it fails
+			// Try preferred transport, fall back if it fails — and retry the
+			// whole sequence with backoff. On marginal links (1-bar 5G) the
+			// ICE handshake is a coin flip; several flips usually land.
 			const preferredType = detectTransportType();
+			opusAvailable = await opusSupported();
 			let connected = false;
+			const maxAttempts = 8;
+			retryingConnect = true;
 
-			if (preferredType === 'webtransport') {
-				try {
-					setTransportType('webtransport');
-					transportDesc = getTransportDescription();
-					const transport = createTransport();
-					await wireTransport(transport, wtUrl, 5000, { certHash });
-					connected = true;
-					reportTransportEvent({ stage: 'webtransport', ok: true });
-				} catch (wtErr) {
-					console.warn('[Tutti] WebTransport failed, falling back to WebRTC:', wtErr);
-					reportTransportEvent({
-						stage: 'webtransport',
-						ok: false,
-						error: String(wtErr).slice(0, 200)
-					});
+			for (let attempt = 1; attempt <= maxAttempts && !connected && !connectAborted; attempt++) {
+				connectAttempt = attempt;
+
+				if (preferredType === 'webtransport') {
+					try {
+						setTransportType('webtransport');
+						transportDesc = getTransportDescription();
+						const transport = createTransport();
+						await wireTransport(transport, wtUrl, 5000, { certHash });
+						connected = true;
+						reportTransportEvent({ stage: 'webtransport', ok: true, attempt });
+					} catch (wtErr) {
+						console.warn('[Tutti] WebTransport failed, falling back to WebRTC:', wtErr);
+						reportTransportEvent({
+							stage: 'webtransport',
+							ok: false,
+							attempt,
+							error: String(wtErr).slice(0, 200)
+						});
+					}
+				}
+
+				if (!connected) {
+					const { WebRTCTransport } = await import('../transport/webrtc.js');
+					const rtcTransport = new WebRTCTransport();
+					try {
+						setTransportType('webrtc');
+						transportDesc = 'WebRTC DataChannel' + (preferredType === 'webtransport' ? ' (fallback)' : '');
+						await wireTransport(rtcTransport, wsUrl, 12000);
+						connected = true;
+						reportTransportEvent({
+							stage: 'webrtc',
+							ok: true,
+							attempt,
+							...rtcTransport.getDiagnostics()
+						});
+					} catch (rtcErr) {
+						console.warn(`[Tutti] Transport attempt ${attempt}/${maxAttempts} failed:`, rtcErr);
+						transportConnected = false;
+						reportTransportEvent({
+							stage: 'webrtc',
+							ok: false,
+							attempt,
+							error: String(rtcErr).slice(0, 200),
+							...rtcTransport.getDiagnostics()
+						});
+					}
+				}
+
+				if (!connected && attempt < maxAttempts && !connectAborted) {
+					const delay = Math.min(15000, 1000 * 2 ** (attempt - 1));
+					await new Promise((r) => setTimeout(r, delay));
 				}
 			}
+			retryingConnect = false;
 
-			if (!connected) {
-				const { WebRTCTransport } = await import('../transport/webrtc.js');
-				const rtcTransport = new WebRTCTransport();
-				try {
-					setTransportType('webrtc');
-					transportDesc = 'WebRTC DataChannel' + (preferredType === 'webtransport' ? ' (fallback)' : '');
-					await wireTransport(rtcTransport, wsUrl, 12000);
-					reportTransportEvent({
-						stage: 'webrtc',
-						ok: true,
-						...rtcTransport.getDiagnostics()
-					});
-				} catch (rtcErr) {
-					console.warn('[Tutti] Transport not connected — audio capture is local only:', rtcErr);
-					transportConnected = false;
-					reportTransportEvent({
-						stage: 'webrtc',
-						ok: false,
-						error: String(rtcErr).slice(0, 200),
-						...rtcTransport.getDiagnostics()
-					});
+			// A cellular-class link cannot carry uncompressed PCM — start
+			// compressed instead of letting the user discover the crackle
+			if (connected && opusAvailable) {
+				const nav = navigator as Navigator & { connection?: { effectiveType?: string } };
+				const et = nav.connection?.effectiveType ?? '';
+				if (et === 'slow-2g' || et === '2g' || et === '3g') {
+					switchCodec('opus', `initial network hint: ${et}`);
 				}
 			}
 
@@ -240,6 +281,67 @@
 			console.error('[Tutti] Audio setup failed:', err);
 			errorDetail = message;
 			setPipelineState('error', message);
+		}
+	}
+
+	function switchCodec(mode: 'pcm' | 'opus', reason: string) {
+		if (!bridge || !activeTransport || codecMode === mode) return;
+		linkState.lastSwitch = Date.now();
+		bridge.setCodec(mode);
+		try {
+			activeTransport.sendReliable(JSON.stringify({ type: 'codec', codec: mode }));
+		} catch {
+			// Transport gone; reconnect flow will reset codec state anyway
+		}
+		codecMode = mode;
+		codecWarning = mode === 'opus';
+		updateCodecMode(mode);
+		reportTransportEvent({ stage: 'codec', ok: true, codec: mode, reason });
+		console.log(`[Tutti] Codec → ${mode} (${reason})`);
+	}
+
+	// Evaluate link health every 2s; downgrade to Opus on sustained trouble,
+	// upgrade back to PCM after a long clean stretch. Hysteresis + dwell
+	// time prevent flapping.
+	function evaluateLink() {
+		if (!transportConnected || !bridge) return;
+		const s = get(audioStats);
+		const recvDelta = s.packetsReceived - linkState.prevRecv;
+		const gapsDelta = s.seqGaps - linkState.prevGaps;
+		linkState.prevRecv = s.packetsReceived;
+		linkState.prevGaps = s.seqGaps;
+
+		const rtt = s.networkRTT;
+		const loss = recvDelta + gapsDelta > 0 ? gapsDelta / (recvDelta + gapsDelta) : 0;
+		const now = Date.now();
+		const bad = rtt > 250 || loss > 0.08;
+		const good = rtt > 0 && rtt < 120 && loss < 0.01;
+
+		if (bad) {
+			linkState.goodSince = 0;
+			if (!linkState.badSince) linkState.badSince = now;
+			if (
+				codecMode === 'pcm' &&
+				opusAvailable &&
+				now - linkState.badSince > 4000 &&
+				now - linkState.lastSwitch > 15000
+			) {
+				switchCodec('opus', `link degraded: rtt=${Math.round(rtt)}ms loss=${(loss * 100).toFixed(1)}%`);
+			}
+		} else if (good) {
+			linkState.badSince = 0;
+			if (!linkState.goodSince) linkState.goodSince = now;
+			if (
+				codecMode === 'opus' &&
+				now - linkState.goodSince > 30000 &&
+				now - linkState.lastSwitch > 15000
+			) {
+				switchCodec('pcm', 'link recovered');
+			}
+		} else {
+			// Middle ground: not bad enough to downgrade, not clean enough
+			// to earn an upgrade
+			linkState.badSince = 0;
 		}
 	}
 
@@ -285,9 +387,13 @@
 			const hw = getHardwareLatency();
 			updateHardwareOutputMs(hw.outputMs);
 
+			statsTicks++;
+
+			// Link-quality evaluation every 2s (4 ticks)
+			if (statsTicks % 4 === 0) evaluateLink();
+
 			// Every 10s, beacon client-side audio health to the server so
 			// incidents are diagnosable from server logs after the fact
-			statsTicks++;
 			if (statsTicks % 20 === 0 && activeTransport && transportConnected) {
 				const s = get(audioStats);
 				try {
@@ -306,6 +412,7 @@
 							reordered: s.seqReordered,
 							rtt: Math.round(s.networkRTT * 10) / 10,
 							rate: s.sampleRate,
+							codec: s.codec,
 							mic_muted: micMuted
 						})
 					);
@@ -452,6 +559,10 @@
 		activeTransport?.disconnect();
 		activeTransport = null;
 		transportConnected = false;
+		codecMode = 'pcm';
+		codecWarning = false;
+		updateCodecMode('pcm');
+		linkState.badSince = linkState.goodSince = linkState.lastSwitch = 0;
 		closeAudioContext();
 
 		setPipelineState('disconnected');
@@ -487,14 +598,18 @@
 			console.warn('[Tutti] Reconnect attempt failed:', err);
 			reconnecting = false;
 
-			if (reconnectAttempts < 2) {
-				reconnectTimer = setTimeout(() => handleReconnect(), 5000);
-			}
-			// After 2 failures, stop auto-reconnecting (manual buttons shown)
+			// Keep trying with capped backoff for as long as we're in the
+			// room — transient radio drops recover on their own timetable.
+			// (Manual buttons appear after 2 attempts as an escape hatch.)
+			reconnectTimer = setTimeout(
+				() => handleReconnect(),
+				Math.min(15000, 3000 * (reconnectAttempts + 1))
+			);
 		}
 	}
 
 	async function handleLeave() {
+		connectAborted = true;
 		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		rttMonitor?.stop();
@@ -509,6 +624,7 @@
 	}
 
 	onDestroy(() => {
+		connectAborted = true;
 		window.removeEventListener('beforeunload', handleBeforeUnload);
 		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
@@ -583,7 +699,18 @@
 	{:else}
 		{#if !transportConnected}
 			<div class="transport-warning">
-				Microphone active (local only) &mdash; server transport not connected.
+				{#if retryingConnect}
+					Connecting to server &mdash; attempt {connectAttempt} of 8&hellip; Microphone is live locally.
+				{:else}
+					Microphone active (local only) &mdash; server transport not connected.
+				{/if}
+			</div>
+		{/if}
+
+		{#if codecWarning && transportConnected}
+			<div class="codec-warning">
+				Weak connection &mdash; switched to compressed audio (slightly more latency,
+				lower fidelity). Full quality returns automatically when the link recovers.
 			</div>
 		{/if}
 
@@ -836,6 +963,17 @@
 	}
 
 	.transport-warning {
+		text-align: center;
+		padding: 0.6rem 1rem;
+		margin-bottom: 1rem;
+		background: var(--warn-dim);
+		border: 1px solid rgba(242, 201, 76, 0.25);
+		color: var(--warn);
+		border-radius: var(--radius-m);
+		font-size: 0.83rem;
+	}
+
+	.codec-warning {
 		text-align: center;
 		padding: 0.6rem 1rem;
 		margin-bottom: 1rem;

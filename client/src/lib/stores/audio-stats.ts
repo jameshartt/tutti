@@ -23,6 +23,8 @@ export interface AudioStats {
 	packetsReceived: number;
 	seqGaps: number;
 	seqReordered: number;
+	// Wire codec (pcm = full quality, opus = weak-link compressed mode)
+	codec: 'pcm' | 'opus';
 	// Network RTT
 	networkRTT: number;
 	networkOneWayMs: number;
@@ -47,6 +49,7 @@ const defaultStats: AudioStats = {
 	packetsReceived: 0,
 	seqGaps: 0,
 	seqReordered: 0,
+	codec: 'pcm',
 	networkRTT: 0,
 	networkOneWayMs: 0,
 	sampleRate: 0,
@@ -101,6 +104,10 @@ export function updateTransportStats(stats: {
 		seqGaps: stats.seqGaps,
 		seqReordered: stats.seqReordered
 	}));
+}
+
+export function updateCodecMode(codec: 'pcm' | 'opus'): void {
+	audioStats.update((s) => ({ ...s, codec }));
 }
 
 export function updateNetworkRTT(rtt: number, oneWayMs: number): void {

@@ -8,6 +8,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "codec.h"
 #include "mixer.h"
 #include "transport/transport_interface.h"
 
@@ -46,6 +47,8 @@ struct RoomAudioStats {
     uint64_t frames_out = 0;       // mixed packets sent
     uint64_t fast_path_forwards = 0;
     uint64_t lobby_loop_frames = 0; // hold-music packets sent to solo listeners
+    uint64_t opus_frames_in = 0;    // Opus packets decoded from participants
+    uint64_t opus_frames_out = 0;   // Opus packets encoded to participants
     size_t participants = 0;
     size_t bound_participants = 0;
 };
@@ -94,6 +97,10 @@ public:
     void set_mute(const std::string& listener_id,
                   const std::string& source_id,
                   bool muted);
+
+    /// Switch a participant's wire codec (both directions). Weak links
+    /// downgrade to Opus (~48kbps) and upgrade back to PCM when healthy.
+    void set_participant_codec(const std::string& id, Codec codec);
 
     /// Claim the room with a password
     bool claim(const std::string& password);
@@ -169,6 +176,10 @@ private:
         std::chrono::steady_clock::time_point join_time;
         int64_t last_audio_received_ns = 0;  // updated under participants_mutex_
         int64_t last_audio_sent_ns = 0;       // updated under participants_mutex_
+        Codec codec = Codec::Pcm;             // read/written under participants_mutex_
+        // Codec working state; shared_ptr so the network thread can decode
+        // outside the participants lock. Recreated on every codec switch.
+        std::shared_ptr<ParticipantCodecState> codec_state;
     };
     std::unordered_map<std::string, Participant> participants_;
     mutable std::mutex participants_mutex_;
@@ -181,8 +192,15 @@ private:
     struct PendingSend {
         std::shared_ptr<TransportSession> session;
         uint8_t buf[kAudioPacketSize];
+        size_t len = kAudioPacketSize;  // Opus packets are shorter
     };
     std::vector<PendingSend> pending_sends_;
+
+    /// Queue one 128-sample mixed frame for a participant, honoring their
+    /// codec. PCM: one packet per call. Opus: accumulates and emits a packet
+    /// per 480 samples. Caller must hold participants_mutex_; packets land
+    /// in pending_sends_ for sending outside the lock.
+    void queue_frame_locked(Participant& p, const int16_t* samples);
 
     // RT mixer thread
     std::thread mixer_thread_;
@@ -205,6 +223,8 @@ private:
     std::atomic<uint64_t> frames_out_{0};
     std::atomic<uint64_t> fast_path_forwards_{0};
     std::atomic<uint64_t> lobby_loop_frames_{0};
+    std::atomic<uint64_t> opus_frames_in_{0};
+    std::atomic<uint64_t> opus_frames_out_{0};
 
     // ── Lobby hold-music state (mixer thread only, except loop_cancel_) ──
     enum class LoopState { Idle, Pending, FadeIn, Playing, FadeOut };
