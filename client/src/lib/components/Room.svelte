@@ -6,7 +6,7 @@
 	import LatencyDisplay from './LatencyDisplay.svelte';
 	import AudioDiagnostics from './AudioDiagnostics.svelte';
 	import LatencyTester from './LatencyTester.svelte';
-	import { roomState, leaveRoom, joinRoom } from '../stores/room.js';
+	import { roomState, leaveRoom, sendLeaveRequest, joinRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
 	import { audioStats, updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs, updateCodecMode } from '../stores/audio-stats.js';
@@ -77,14 +77,11 @@
 	let retryingConnect = $state(false);
 	let connectAborted = false;
 
-	// Phase 2: beforeunload — send leave beacon on tab close
+	// beforeunload — leave promptly on tab close (keepalive fetch survives
+	// unload; sendBeacon deliveries were observed getting lost)
 	function handleBeforeUnload() {
 		if (roomName && participantId) {
-			const blob = new Blob(
-				[JSON.stringify({ participant_id: participantId })],
-				{ type: 'application/json' }
-			);
-			navigator.sendBeacon(`/api/rooms/${encodeURIComponent(roomName)}/leave`, blob);
+			sendLeaveRequest(roomName, participantId);
 		}
 	}
 

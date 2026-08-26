@@ -173,6 +173,29 @@ void HttpServer::handle_connection(int client_fd) {
     inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, sizeof(ip_buf));
     req.remote_ip = ip_buf;
 
+    // Behind the reverse proxy every socket peer is Caddy's container IP,
+    // which collapsed all users into ONE rate-limit bucket (a burst from
+    // one person could 429 someone else's leave/join). Trust the first
+    // X-Forwarded-For hop instead — this port is only reachable via Caddy,
+    // which always sets it. Direct (unproxied) requests keep the peer IP.
+    {
+        auto pos = data.find("X-Forwarded-For:");
+        if (pos == std::string::npos) pos = data.find("x-forwarded-for:");
+        if (pos != std::string::npos && pos < header_end) {
+            auto start = pos + 16;
+            auto eol = data.find("\r\n", start);
+            std::string xff = data.substr(start, eol - start);
+            auto comma = xff.find(',');
+            if (comma != std::string::npos) xff = xff.substr(0, comma);
+            // Trim whitespace
+            auto b = xff.find_first_not_of(" \t");
+            auto e = xff.find_last_not_of(" \t");
+            if (b != std::string::npos && e - b < 45) {
+                req.remote_ip = xff.substr(b, e - b + 1);
+            }
+        }
+    }
+
     auto resp = route(req);
 
     // Build HTTP response.
@@ -420,6 +443,9 @@ HttpServer::HttpResponse HttpServer::handle_leave_room(
         return {400, "application/json", R"({"error":"missing_participant_id"})"};
     }
 
+    // Log so client-side leave delivery is verifiable from docker logs
+    std::cout << "[HttpServer] leave room=" << room_name
+              << " participant=" << participant_id << "\n";
     room_manager_->leave_room(room_name, participant_id);
     return {200, "application/json", R"({"ok":true})"};
 }

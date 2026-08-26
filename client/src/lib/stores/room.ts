@@ -79,28 +79,37 @@ export async function joinRoom(
 }
 
 /**
- * Leave the current room. Never blocks on the network: the leave POST is a
- * fire-and-forget beacon (the same one beforeunload uses) and the server
- * removes us on transport disconnect regardless — the POST just makes the
- * departure immediate instead of waiting for the disconnect event. State
- * resets synchronously so navigation back to the lobby is instant.
+ * Fire-and-forget leave POST. `keepalive: true` lets the request outlive
+ * navigation/unload (the same guarantee sendBeacon offers), but as a real
+ * fetch it has the exact request shape the server verifiably handles —
+ * sendBeacon deliveries were observed getting lost, orphaning participants
+ * until the 120s unbound reaper collected them.
+ */
+export function sendLeaveRequest(roomName: string, participantId: string): void {
+	try {
+		void fetch(`/api/rooms/${encodeURIComponent(roomName)}/leave`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ participant_id: participantId }),
+			keepalive: true
+		}).catch(() => {});
+	} catch {
+		// Best effort
+	}
+}
+
+/**
+ * Leave the current room. Never blocks on the network — the leave POST is
+ * fire-and-forget, and the server removes us on transport disconnect
+ * regardless; the POST just makes departure immediate for participants
+ * with no bound transport. State resets synchronously so navigation back
+ * to the lobby is instant.
  */
 export function leaveRoom(): void {
 	const state = getState();
 	if (!state.currentRoom || !state.participantId) return;
 
-	try {
-		const blob = new Blob([JSON.stringify({ participant_id: state.participantId })], {
-			type: 'application/json'
-		});
-		navigator.sendBeacon(
-			`/api/rooms/${encodeURIComponent(state.currentRoom)}/leave`,
-			blob
-		);
-	} catch {
-		// Best effort
-	}
-
+	sendLeaveRequest(state.currentRoom, state.participantId);
 	roomState.set(initialRoomState);
 }
 
