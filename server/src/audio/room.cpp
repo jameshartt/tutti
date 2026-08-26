@@ -60,6 +60,7 @@ bool Room::add_participant(const std::string& id,
     participants_[id] = {alias, std::move(session), 0,
                          std::chrono::steady_clock::now(), 0, 0};
     mixer_.add_participant(id);
+    recount_bound_locked();
 
     // Notify existing participants
     nlohmann::json msg = {
@@ -99,6 +100,7 @@ bool Room::attach_session(const std::string& id,
     if (it == participants_.end()) return false;
 
     it->second.session = std::move(session);
+    recount_bound_locked();
 
     // Send room state to the newly-bound participant
     if (it->second.session) {
@@ -121,6 +123,7 @@ void Room::remove_participant(const std::string& id) {
     std::lock_guard<std::mutex> lock(participants_mutex_);
     participants_.erase(id);
     mixer_.remove_participant(id);
+    recount_bound_locked();
 
     // Notify remaining participants
     nlohmann::json msg = {
@@ -142,23 +145,25 @@ void Room::on_audio_received(const std::string& participant_id,
                               const uint8_t* data, size_t len) {
     if (len < kAudioPacketSize) return;
 
-    // Fast path: 2 participants → direct forwarding (bypass mixer)
+    // Fast path: exactly 2 BOUND participants → direct forwarding (bypass
+    // mixer). Count only participants with an attached transport session:
+    // ghost records (HTTP join that never bound, lingering up to 120s)
+    // must not force everyone onto the mixer path.
     std::shared_ptr<TransportSession> target_session;
     std::string target_id;
     uint32_t output_seq = 0;
     bool use_fast_path = false;
-    size_t count = 0;
 
     {
         std::lock_guard<std::mutex> lock(participants_mutex_);
-        count = participants_.size();
         // Stamp activity for reaper
         auto recv_it = participants_.find(participant_id);
         if (recv_it != participants_.end())
             recv_it->second.last_audio_received_ns = now_ns();
-        if (count == 2) {
+        recount_bound_locked();
+        if (bound_count_.load(std::memory_order_relaxed) == 2) {
             for (auto& [pid, p] : participants_) {
-                if (pid != participant_id) {
+                if (pid != participant_id && p.session) {
                     target_id = pid;
                     target_session = p.session;
                     output_seq = p.output_sequence++;
@@ -198,6 +203,7 @@ void Room::on_audio_received(const std::string& participant_id,
             if (target_session)
                 target_session->send_datagram(buf, kAudioPacketSize);
         }
+        fast_path_forwards_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -206,9 +212,13 @@ void Room::on_audio_received(const std::string& participant_id,
     auto frame = AudioFrame::from_packet(pkt);
     mixer_.push_input(participant_id, frame);
 
-    // Notify mixer thread if all frames have arrived this cycle
+    // Early-wake hint for the mixer thread once roughly one frame per
+    // bound participant has arrived. Purely a latency optimization —
+    // the mixer's absolute deadline guarantees cadence even when some
+    // participants send nothing (muted mic, mid-join, packet loss).
     uint32_t received = frames_received_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (received >= count) {
+    uint32_t senders = bound_count_.load(std::memory_order_relaxed);
+    if (senders > 0 && received >= senders) {
 #ifdef __linux__
         uint64_t val = 1;
         (void)::write(notify_fd_, &val, sizeof(val));
@@ -340,20 +350,67 @@ void Room::mixer_thread_func() {
 #endif
 
     // Mix cycle interval: match one render quantum (~2.67ms at 48kHz/128 samples)
-    constexpr auto mix_interval =
-        std::chrono::microseconds(1000000 * kSamplesPerFrame / kSampleRate);
+    constexpr auto mix_interval = std::chrono::nanoseconds(
+        1000000000LL * kSamplesPerFrame / kSampleRate);
+
+    auto last_log = std::chrono::steady_clock::now();
+    RoomAudioStats last_snapshot{};
+
+#ifdef __linux__
+    auto next_deadline = std::chrono::steady_clock::now() + mix_interval;
+#endif
 
     while (running_) {
 #ifdef __linux__
-        // Event-driven: wait for all participants' frames or timeout
-        struct pollfd pfd;
-        pfd.fd = notify_fd_;
-        pfd.events = POLLIN;
-        // Timeout slightly above one frame period to catch stragglers
-        int ret = poll(&pfd, 1, 3);
-        if (ret > 0 && (pfd.revents & POLLIN)) {
-            uint64_t val;
-            (void)::read(notify_fd_, &val, sizeof(val));
+        // Idle room: nothing to mix — sleep coarsely, drain stale notifies
+        if (mixer_.participant_count() == 0) {
+            struct pollfd idle_pfd;
+            idle_pfd.fd = notify_fd_;
+            idle_pfd.events = POLLIN;
+            if (poll(&idle_pfd, 1, 100) > 0 && (idle_pfd.revents & POLLIN)) {
+                uint64_t val;
+                (void)::read(notify_fd_, &val, sizeof(val));
+            }
+            next_deadline = std::chrono::steady_clock::now() + mix_interval;
+            continue;
+        }
+
+        // Event-driven with a hard cadence backstop: wake when all bound
+        // participants' frames arrive, but never sleep past the absolute
+        // deadline. The mixer must cycle at >= 375Hz (one frame period);
+        // a plain poll() timeout can't express 2.667ms (ms granularity,
+        // and 3ms ran the mixer 11% slow whenever the event didn't fire —
+        // queues overflowed and everyone sounded robotic). ppoll gives ns
+        // precision and the absolute deadline prevents drift.
+        bool notified = false;
+        auto now = std::chrono::steady_clock::now();
+        if (next_deadline > now) {
+            auto remaining = next_deadline - now;
+            struct timespec ts;
+            ts.tv_sec = std::chrono::duration_cast<std::chrono::seconds>(remaining).count();
+            ts.tv_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                remaining - std::chrono::seconds(ts.tv_sec)).count();
+            struct pollfd pfd;
+            pfd.fd = notify_fd_;
+            pfd.events = POLLIN;
+            int ret = ppoll(&pfd, 1, &ts, nullptr);
+            if (ret > 0 && (pfd.revents & POLLIN)) {
+                uint64_t val;
+                (void)::read(notify_fd_, &val, sizeof(val));
+                notified = true;
+            }
+        }
+        now = std::chrono::steady_clock::now();
+        if (notified) {
+            // Arrivals pace us — restart the deadline window from now
+            wake_notify_.fetch_add(1, std::memory_order_relaxed);
+            next_deadline = now + mix_interval;
+        } else {
+            wake_deadline_.fetch_add(1, std::memory_order_relaxed);
+            next_deadline += mix_interval;
+            // Fell badly behind (scheduling stall)? Resync instead of
+            // burst-spinning to catch up
+            if (next_deadline < now) next_deadline = now + mix_interval;
         }
 #else
         std::this_thread::sleep_for(mix_interval);
@@ -362,6 +419,32 @@ void Room::mixer_thread_func() {
         frames_received_.store(0, std::memory_order_release);
         mixer_.mix_cycle();
         send_outputs();
+        mix_cycles_.fetch_add(1, std::memory_order_relaxed);
+
+        // Periodic telemetry: log activity deltas so incidents are
+        // diagnosable from docker logs after the fact
+        auto log_now = std::chrono::steady_clock::now();
+        if (log_now - last_log >= std::chrono::seconds(15)) {
+            last_log = log_now;
+            auto s = audio_stats();
+            bool active = s.frames_in != last_snapshot.frames_in ||
+                          s.frames_out != last_snapshot.frames_out ||
+                          s.fast_path_forwards != last_snapshot.fast_path_forwards;
+            if (active) {
+                std::cout << "[Room:" << name_ << "] audio stats (15s): "
+                          << "cycles=" << (s.mix_cycles - last_snapshot.mix_cycles)
+                          << " wake_notify=" << (s.wake_notify - last_snapshot.wake_notify)
+                          << " wake_deadline=" << (s.wake_deadline - last_snapshot.wake_deadline)
+                          << " in=" << (s.frames_in - last_snapshot.frames_in)
+                          << " in_dropped=" << (s.frames_in_dropped - last_snapshot.frames_in_dropped)
+                          << " skipped=" << (s.frames_skipped - last_snapshot.frames_skipped)
+                          << " out=" << (s.frames_out - last_snapshot.frames_out)
+                          << " fast=" << (s.fast_path_forwards - last_snapshot.fast_path_forwards)
+                          << " participants=" << s.participants
+                          << " bound=" << s.bound_participants << "\n";
+            }
+            last_snapshot = s;
+        }
     }
 }
 
@@ -387,9 +470,35 @@ void Room::send_outputs() {
 
     // Send outside the lock
     for (auto& ps : pending_sends_) {
-        if (ps.session)
+        if (ps.session) {
             ps.session->send_datagram(ps.buf, kAudioPacketSize);
+            frames_out_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
+}
+
+void Room::recount_bound_locked() {
+    uint32_t bound = 0;
+    for (auto& [pid, p] : participants_) {
+        if (p.session) ++bound;
+    }
+    bound_count_.store(bound, std::memory_order_relaxed);
+}
+
+RoomAudioStats Room::audio_stats() const {
+    RoomAudioStats s;
+    s.mix_cycles = mix_cycles_.load(std::memory_order_relaxed);
+    s.wake_notify = wake_notify_.load(std::memory_order_relaxed);
+    s.wake_deadline = wake_deadline_.load(std::memory_order_relaxed);
+    auto mc = mixer_.counters();
+    s.frames_in = mc.frames_in;
+    s.frames_in_dropped = mc.frames_in_dropped;
+    s.frames_skipped = mc.frames_skipped;
+    s.frames_out = frames_out_.load(std::memory_order_relaxed);
+    s.fast_path_forwards = fast_path_forwards_.load(std::memory_order_relaxed);
+    s.participants = participant_count();
+    s.bound_participants = bound_count_.load(std::memory_order_relaxed);
+    return s;
 }
 
 } // namespace tutti

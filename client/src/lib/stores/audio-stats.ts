@@ -20,6 +20,8 @@ export interface AudioStats {
 	// Transport
 	packetsSent: number;
 	packetsReceived: number;
+	seqGaps: number;
+	seqReordered: number;
 	// Network RTT
 	networkRTT: number;
 	networkOneWayMs: number;
@@ -41,6 +43,8 @@ const defaultStats: AudioStats = {
 	captureFillLevel: 0,
 	packetsSent: 0,
 	packetsReceived: 0,
+	seqGaps: 0,
+	seqReordered: 0,
 	networkRTT: 0,
 	networkOneWayMs: 0,
 	sampleRate: 0,
@@ -83,11 +87,15 @@ export function updateCaptureStats(stats: {
 export function updateTransportStats(stats: {
 	packetsSent: number;
 	packetsReceived: number;
+	seqGaps: number;
+	seqReordered: number;
 }): void {
 	audioStats.update((s) => ({
 		...s,
 		packetsSent: stats.packetsSent,
-		packetsReceived: stats.packetsReceived
+		packetsReceived: stats.packetsReceived,
+		seqGaps: stats.seqGaps,
+		seqReordered: stats.seqReordered
 	}));
 }
 

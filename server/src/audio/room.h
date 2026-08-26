@@ -34,6 +34,21 @@ inline int64_t now_ns() {
 constexpr auto kUnboundTimeout = std::chrono::seconds(120);
 constexpr auto kInactivityTimeout = std::chrono::seconds(15);
 
+/// Snapshot of a room's audio-path telemetry counters (all cumulative
+/// since server start).
+struct RoomAudioStats {
+    uint64_t mix_cycles = 0;
+    uint64_t wake_notify = 0;      // mixer woken by all-frames-arrived event
+    uint64_t wake_deadline = 0;    // mixer woken by cadence deadline
+    uint64_t frames_in = 0;
+    uint64_t frames_in_dropped = 0;
+    uint64_t frames_skipped = 0;   // backlog skip-ahead discards
+    uint64_t frames_out = 0;       // mixed packets sent
+    uint64_t fast_path_forwards = 0;
+    size_t participants = 0;
+    size_t bound_participants = 0;
+};
+
 /// A single rehearsal room with its own mixer and RT thread.
 class Room {
 public:
@@ -106,9 +121,15 @@ public:
     /// Send a control message to every connected participant
     void broadcast_control(const std::string& msg);
 
+    /// Telemetry snapshot for logging and the stats API
+    RoomAudioStats audio_stats() const;
+
 private:
     /// RT mixer thread function
     void mixer_thread_func();
+
+    /// Recompute bound_count_ — caller must hold participants_mutex_
+    void recount_bound_locked();
 
     /// Send mixed output to all participants
     void send_outputs();
@@ -144,9 +165,22 @@ private:
     std::thread mixer_thread_;
     std::atomic<bool> running_{false};
 
-    // Event-driven mixer: fires when all participants submit a frame
+    // Event-driven mixer: fires when all bound participants submit a frame
     int notify_fd_ = -1;  // Linux eventfd, -1 on other platforms
     std::atomic<uint32_t> frames_received_{0};
+
+    // Number of participants with an attached transport session. Kept
+    // up to date by on_audio_received / add / attach / remove so the
+    // audio path and mixer wake-up logic never count ghost (unbound)
+    // participants.
+    std::atomic<uint32_t> bound_count_{0};
+
+    // Telemetry counters (relaxed atomics — approximate ordering is fine)
+    std::atomic<uint64_t> mix_cycles_{0};
+    std::atomic<uint64_t> wake_notify_{0};
+    std::atomic<uint64_t> wake_deadline_{0};
+    std::atomic<uint64_t> frames_out_{0};
+    std::atomic<uint64_t> fast_path_forwards_{0};
 };
 
 } // namespace tutti

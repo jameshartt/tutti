@@ -62,7 +62,13 @@ bool Mixer::push_input(const std::string& participant_id,
     std::lock_guard<std::mutex> lock(participants_mutex_);
     auto it = participants_.find(participant_id);
     if (it == participants_.end()) return false;
-    return it->second->input_queue.try_push(frame);
+    bool ok = it->second->input_queue.try_push(frame);
+    if (ok) {
+        frames_in_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        frames_in_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return ok;
 }
 
 bool Mixer::pop_output(const std::string& participant_id,
@@ -88,11 +94,26 @@ void Mixer::mix_cycle() {
     const size_t n = active_ids_.size();
     if (n == 0) return;
 
-    // Pop one frame per participant per cycle (SPSC queues are lock-free)
+    // Pop one frame per participant per cycle (SPSC queues are lock-free).
+    // Backlog control: if a queue has accumulated more than the high-water
+    // mark (e.g. after a scheduling stall or cadence hiccup), skip ahead by
+    // discarding the oldest frames down to the target depth. A one-off ~5ms
+    // skip is far less audible than the alternative: the queue pinned at
+    // capacity, adding 21ms latency and dropping newest frames every cycle.
+    constexpr size_t kBacklogHighWater = 4;
+    constexpr size_t kBacklogTarget = 2;
     for (size_t i = 0; i < n; ++i) {
         has_input_[i] = false;
+        auto& queue = active_states_[i]->input_queue;
+        size_t depth = queue.size_approx();
+        if (depth > kBacklogHighWater) {
+            AudioFrame discard;
+            while (depth-- > kBacklogTarget && queue.try_pop(discard)) {
+                frames_skipped_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         AudioFrame frame;
-        if (active_states_[i]->input_queue.try_pop(frame)) {
+        if (queue.try_pop(frame)) {
             input_frames_[i] = frame.samples;
             has_input_[i] = true;
         }

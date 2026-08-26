@@ -66,6 +66,7 @@ private:
                                    const std::string& body);
     HttpResponse handle_claim_room(const std::string& room_name,
                                    const std::string& body);
+    HttpResponse handle_room_stats(const std::string& room_name);
     HttpResponse handle_vacate_request(const std::string& room_name,
                                        const std::string& remote_ip);
 

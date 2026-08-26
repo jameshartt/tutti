@@ -71,6 +71,13 @@ void SessionBinder::on_message(TransportSession* session,
                         room->set_mute(it->second.participant_id, source_id, muted);
                     }
                 }
+            } else if (type == "client_stats") {
+                // Client-side audio telemetry beacon (every ~10s). Logged so
+                // incidents are diagnosable from server logs after the fact.
+                msg.erase("type");
+                std::cout << "[ClientStats] room=" << it->second.room_name
+                          << " participant=" << it->second.participant_id
+                          << " " << msg.dump() << "\n";
             }
             return;
         }

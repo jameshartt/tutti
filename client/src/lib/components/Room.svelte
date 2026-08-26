@@ -9,7 +9,7 @@
 	import { roomState, leaveRoom, joinRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
-	import { updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs } from '../stores/audio-stats.js';
+	import { audioStats, updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs } from '../stores/audio-stats.js';
 	import { startCapture, type CaptureHandle } from '../audio/capture.js';
 	import { startPlayback, type PlaybackHandle } from '../audio/playback.js';
 	import { TransportBridge } from '../audio/transport-bridge.js';
@@ -255,6 +255,7 @@
 		}
 
 		// Poll transport stats periodically
+		let statsTicks = 0;
 		statsTimer = setInterval(() => {
 			if (bridge) {
 				updateTransportStats(bridge.getStats());
@@ -265,6 +266,34 @@
 			// Push hardware output latency for diagnostics panel
 			const hw = getHardwareLatency();
 			updateHardwareOutputMs(hw.outputMs);
+
+			// Every 10s, beacon client-side audio health to the server so
+			// incidents are diagnosable from server logs after the fact
+			statsTicks++;
+			if (statsTicks % 20 === 0 && activeTransport && transportConnected) {
+				const s = get(audioStats);
+				try {
+					activeTransport.sendReliable(
+						JSON.stringify({
+							type: 'client_stats',
+							underruns: s.playbackUnderruns,
+							partial: s.playbackPartialFrames,
+							fill: s.playbackFillLevel,
+							prebuffering: s.playbackPrebuffering,
+							cap_dropped: s.captureDroppedFrames,
+							sent: s.packetsSent,
+							recv: s.packetsReceived,
+							gaps: s.seqGaps,
+							reordered: s.seqReordered,
+							rtt: Math.round(s.networkRTT * 10) / 10,
+							rate: s.sampleRate,
+							mic_muted: micMuted
+						})
+					);
+				} catch {
+					// Transport went away between checks — ignore
+				}
+			}
 		}, 500);
 	}
 

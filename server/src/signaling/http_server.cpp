@@ -291,6 +291,9 @@ HttpServer::HttpResponse HttpServer::route(const HttpRequest& req) {
             return {429, "application/json", R"({"error":"rate_limited"})"};
         }
 
+        if (req.method == "GET" && action == "stats") {
+            return handle_room_stats(room_name);
+        }
         if (req.method == "POST" && action == "join") {
             return handle_join_room(room_name, req.body);
         }
@@ -320,6 +323,29 @@ HttpServer::HttpResponse HttpServer::handle_list_rooms() {
         });
     }
     return {200, "application/json", nlohmann::json{{"rooms", result}}.dump()};
+}
+
+HttpServer::HttpResponse HttpServer::handle_room_stats(const std::string& room_name) {
+    auto room = room_manager_->get_room(room_name);
+    if (!room) {
+        return {404, "application/json", R"({"error":"room_not_found"})"};
+    }
+    auto s = room->audio_stats();
+    nlohmann::json resp = {
+        {"room", room->name()},
+        {"participants", s.participants},
+        {"bound_participants", s.bound_participants},
+        {"path", s.bound_participants > 2 ? "mixer" : "fast"},
+        {"mix_cycles", s.mix_cycles},
+        {"wake_notify", s.wake_notify},
+        {"wake_deadline", s.wake_deadline},
+        {"frames_in", s.frames_in},
+        {"frames_in_dropped", s.frames_in_dropped},
+        {"frames_skipped", s.frames_skipped},
+        {"frames_out", s.frames_out},
+        {"fast_path_forwards", s.fast_path_forwards}
+    };
+    return {200, "application/json", resp.dump()};
 }
 
 HttpServer::HttpResponse HttpServer::handle_join_room(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -80,6 +81,19 @@ public:
     /// Called from the RT mixer thread. Must be lock-free.
     void mix_cycle();
 
+    /// Cumulative counters for telemetry. Written from RT/network threads
+    /// via relaxed atomics; read from anywhere.
+    struct Counters {
+        uint64_t frames_in = 0;         // frames accepted into input queues
+        uint64_t frames_in_dropped = 0; // input queue full → frame dropped
+        uint64_t frames_skipped = 0;    // backlog skip-ahead discards
+    };
+    Counters counters() const {
+        return {frames_in_.load(std::memory_order_relaxed),
+                frames_in_dropped_.load(std::memory_order_relaxed),
+                frames_skipped_.load(std::memory_order_relaxed)};
+    }
+
     /// Get current participant count
     size_t participant_count() const;
 
@@ -98,6 +112,11 @@ private:
     std::unordered_map<std::string,
                        std::unordered_map<std::string, GainEntry>> gains_;
     std::mutex gains_mutex_;
+
+    // Telemetry counters
+    std::atomic<uint64_t> frames_in_{0};
+    std::atomic<uint64_t> frames_in_dropped_{0};
+    std::atomic<uint64_t> frames_skipped_{0};
 
     // Temporary buffers for mix cycle (pre-allocated, no allocations on RT path)
     std::vector<std::array<int16_t, kSamplesPerFrame>> input_frames_;

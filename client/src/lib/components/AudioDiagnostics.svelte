@@ -143,6 +143,14 @@
 						<td>pkts recv</td>
 						<td>{stats.packetsReceived}</td>
 					</tr>
+					<tr>
+						<td>seq gaps</td>
+						<td class:warn={stats.seqGaps > 0}>{stats.seqGaps}</td>
+					</tr>
+					<tr>
+						<td>reordered</td>
+						<td>{stats.seqReordered}</td>
+					</tr>
 				</tbody>
 			</table>
 		</div>

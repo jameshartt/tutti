@@ -47,6 +47,9 @@ export class TransportBridge {
 	private sendSequence = 0;
 	private sendTimestamp = 0;
 	private incomingCount = 0;
+	private lastRecvSequence = -1;
+	private seqGaps = 0; // total missing packets (server drop or network loss)
+	private seqReordered = 0; // packets that arrived late/out of order
 	private loopbackEnabled = false;
 	private micMuted = false;
 
@@ -149,10 +152,17 @@ export class TransportBridge {
 	}
 
 	/** Get transport packet counters for diagnostics */
-	getStats(): { packetsSent: number; packetsReceived: number } {
+	getStats(): {
+		packetsSent: number;
+		packetsReceived: number;
+		seqGaps: number;
+		seqReordered: number;
+	} {
 		return {
 			packetsSent: this.sendSequence,
-			packetsReceived: this.incomingCount
+			packetsReceived: this.incomingCount,
+			seqGaps: this.seqGaps,
+			seqReordered: this.seqReordered
 		};
 	}
 
@@ -186,6 +196,20 @@ export class TransportBridge {
 	private handleIncoming(data: Uint8Array): void {
 		const packet = deserializePacket(data);
 		if (!packet) return;
+
+		// Track sequence continuity: gaps mean the server dropped mixed
+		// frames or the network lost packets — both audible as glitches.
+		if (this.lastRecvSequence >= 0) {
+			const delta = packet.sequence - this.lastRecvSequence;
+			if (delta > 1) {
+				this.seqGaps += delta - 1;
+			} else if (delta <= 0) {
+				this.seqReordered++;
+			}
+		}
+		if (packet.sequence > this.lastRecvSequence) {
+			this.lastRecvSequence = packet.sequence;
+		}
 
 		// Write received samples to playback ring buffer
 		this.playbackWriter.write(packet.samples);
