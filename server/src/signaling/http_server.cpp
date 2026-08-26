@@ -343,7 +343,8 @@ HttpServer::HttpResponse HttpServer::handle_room_stats(const std::string& room_n
         {"frames_in_dropped", s.frames_in_dropped},
         {"frames_skipped", s.frames_skipped},
         {"frames_out", s.frames_out},
-        {"fast_path_forwards", s.fast_path_forwards}
+        {"fast_path_forwards", s.fast_path_forwards},
+        {"lobby_loop_frames", s.lobby_loop_frames}
     };
     return {200, "application/json", resp.dump()};
 }

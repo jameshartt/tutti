@@ -1,8 +1,10 @@
 #include "room.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -17,6 +19,26 @@
 #endif
 
 namespace tutti {
+
+std::vector<int16_t> Room::lobby_loop_;
+
+bool Room::load_lobby_loop(const std::string& path) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    auto bytes = static_cast<size_t>(f.tellg());
+    size_t samples = bytes / sizeof(int16_t);
+    // Need at least one second of audio to be worth playing
+    if (samples < kSampleRate) return false;
+    lobby_loop_.resize(samples);
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(lobby_loop_.data()),
+           static_cast<std::streamsize>(samples * sizeof(int16_t)));
+    return static_cast<bool>(f);
+}
+
+void Room::set_lobby_loop_samples(std::vector<int16_t> samples) {
+    lobby_loop_ = std::move(samples);
+}
 
 Room::Room(const std::string& name, size_t max_participants)
     : name_(name),
@@ -204,6 +226,8 @@ void Room::on_audio_received(const std::string& participant_id,
                 target_session->send_datagram(buf, kAudioPacketSize);
         }
         fast_path_forwards_.fetch_add(1, std::memory_order_relaxed);
+        // Real audio is flowing — hold music must never interleave with it
+        loop_cancel_.store(true, std::memory_order_relaxed);
         return;
     }
 
@@ -364,6 +388,7 @@ void Room::mixer_thread_func() {
 #ifdef __linux__
         // Idle room: nothing to mix — sleep coarsely, drain stale notifies
         if (mixer_.participant_count() == 0) {
+            loop_state_ = LoopState::Idle;
             struct pollfd idle_pfd;
             idle_pfd.fd = notify_fd_;
             idle_pfd.events = POLLIN;
@@ -419,6 +444,7 @@ void Room::mixer_thread_func() {
         frames_received_.store(0, std::memory_order_release);
         mixer_.mix_cycle();
         send_outputs();
+        service_lobby_loop(std::chrono::steady_clock::now());
         mix_cycles_.fetch_add(1, std::memory_order_relaxed);
 
         // Periodic telemetry: log activity deltas so incidents are
@@ -429,7 +455,8 @@ void Room::mixer_thread_func() {
             auto s = audio_stats();
             bool active = s.frames_in != last_snapshot.frames_in ||
                           s.frames_out != last_snapshot.frames_out ||
-                          s.fast_path_forwards != last_snapshot.fast_path_forwards;
+                          s.fast_path_forwards != last_snapshot.fast_path_forwards ||
+                          s.lobby_loop_frames != last_snapshot.lobby_loop_frames;
             if (active) {
                 std::cout << "[Room:" << name_ << "] audio stats (15s): "
                           << "cycles=" << (s.mix_cycles - last_snapshot.mix_cycles)
@@ -440,10 +467,169 @@ void Room::mixer_thread_func() {
                           << " skipped=" << (s.frames_skipped - last_snapshot.frames_skipped)
                           << " out=" << (s.frames_out - last_snapshot.frames_out)
                           << " fast=" << (s.fast_path_forwards - last_snapshot.fast_path_forwards)
+                          << " loop=" << (s.lobby_loop_frames - last_snapshot.lobby_loop_frames)
                           << " participants=" << s.participants
                           << " bound=" << s.bound_participants << "\n";
             }
             last_snapshot = s;
+        }
+    }
+}
+
+void Room::service_lobby_loop(std::chrono::steady_clock::time_point now) {
+    if (lobby_loop_.empty()) return;
+
+    // Instant kill from the network thread: real audio was forwarded, so a
+    // fading-out loop must stop rather than interleave with it
+    if (loop_cancel_.exchange(false, std::memory_order_relaxed) &&
+        loop_state_ != LoopState::Idle) {
+        loop_state_ = LoopState::Idle;
+    }
+
+    // Solo = exactly one participant record AND they have a transport bound
+    bool solo = false;
+    std::string solo_id;
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        if (participants_.size() == 1) {
+            auto& [id, p] = *participants_.begin();
+            if (p.session) {
+                solo = true;
+                solo_id = id;
+            }
+        }
+    }
+
+    const double fade_s =
+        std::max(0.001, std::chrono::duration<double>(loop_fade_).count());
+
+    switch (loop_state_) {
+        case LoopState::Idle:
+            if (solo) {
+                loop_state_ = LoopState::Pending;
+                loop_listener_id_ = solo_id;
+                loop_solo_since_ = now;
+            }
+            return;
+        case LoopState::Pending:
+            if (!solo) {
+                loop_state_ = LoopState::Idle;
+                return;
+            }
+            if (solo_id != loop_listener_id_) {
+                // Different person is solo now — restart the delay
+                loop_listener_id_ = solo_id;
+                loop_solo_since_ = now;
+                return;
+            }
+            if (now - loop_solo_since_ < loop_delay_) return;
+            loop_state_ = LoopState::FadeIn;
+            loop_fade_start_ = now;
+            loop_pos_ = 0;
+            loop_next_send_ = now;
+            break;
+        case LoopState::FadeIn:
+        case LoopState::Playing:
+            if (!solo || solo_id != loop_listener_id_) {
+                double gain = 1.0;
+                if (loop_state_ == LoopState::FadeIn) {
+                    gain = std::min(1.0,
+                        std::chrono::duration<double>(now - loop_fade_start_)
+                            .count() / fade_s);
+                }
+                loop_state_ = LoopState::FadeOut;
+                loop_fade_start_ = now;
+                loop_fade_start_gain_ = gain;
+            }
+            break;
+        case LoopState::FadeOut:
+            break;
+    }
+
+    // Compute the envelope gain for this moment
+    auto envelope = [&](std::chrono::steady_clock::time_point t) -> double {
+        double elapsed =
+            std::chrono::duration<double>(t - loop_fade_start_).count();
+        switch (loop_state_) {
+            case LoopState::FadeIn: {
+                double g = elapsed / fade_s;
+                if (g >= 1.0) {
+                    loop_state_ = LoopState::Playing;
+                    return 1.0;
+                }
+                return std::max(0.0, g);
+            }
+            case LoopState::Playing:
+                return 1.0;
+            case LoopState::FadeOut: {
+                double g = loop_fade_start_gain_ * (1.0 - elapsed / fade_s);
+                if (g <= 0.0) {
+                    loop_state_ = LoopState::Idle;
+                    return 0.0;
+                }
+                return g;
+            }
+            default:
+                return 0.0;
+        }
+    };
+
+    // Per-iteration edge fade, for a replacement clip that does NOT loop
+    // seamlessly: ramp in/out over this many samples at the clip boundary.
+    // The generated bossa loop is rendered circularly (tails wrap), so it
+    // needs none — leave at 0 unless the asset changes.
+    constexpr size_t kLoopEdgeFadeSamples = 0;
+
+    // Stream at exactly one frame per 2.667ms, paced by absolute time so
+    // extra mixer wake-ups can't pitch-shift the loop
+    constexpr auto frame_interval = std::chrono::nanoseconds(
+        1000000000LL * kSamplesPerFrame / kSampleRate);
+    const size_t loop_len = lobby_loop_.size();
+
+    while (loop_state_ != LoopState::Idle && now >= loop_next_send_) {
+        double gain = envelope(loop_next_send_);
+        if (loop_state_ == LoopState::Idle) break;
+
+        AudioPacket pkt;
+        pkt.timestamp = static_cast<uint32_t>(loop_pos_);
+        for (size_t s = 0; s < kSamplesPerFrame; ++s) {
+            size_t idx = (loop_pos_ + s) % loop_len;
+            double g = gain;
+            if (kLoopEdgeFadeSamples > 0) {
+                size_t from_start = idx;
+                size_t from_end = loop_len - 1 - idx;
+                size_t edge = std::min(from_start, from_end);
+                if (edge < kLoopEdgeFadeSamples) {
+                    g *= static_cast<double>(edge) / kLoopEdgeFadeSamples;
+                }
+            }
+            pkt.samples[s] = static_cast<int16_t>(std::clamp(
+                static_cast<int32_t>(std::lround(lobby_loop_[idx] * g)),
+                static_cast<int32_t>(std::numeric_limits<int16_t>::min()),
+                static_cast<int32_t>(std::numeric_limits<int16_t>::max())));
+        }
+        loop_pos_ = (loop_pos_ + kSamplesPerFrame) % loop_len;
+
+        std::shared_ptr<TransportSession> session;
+        {
+            std::lock_guard<std::mutex> lock(participants_mutex_);
+            auto it = participants_.find(loop_listener_id_);
+            if (it == participants_.end() || !it->second.session) {
+                loop_state_ = LoopState::Idle;
+                return;
+            }
+            pkt.sequence = it->second.output_sequence++;
+            session = it->second.session;
+        }
+        uint8_t buf[kAudioPacketSize];
+        pkt.serialize(buf);
+        session->send_datagram(buf, kAudioPacketSize);
+        lobby_loop_frames_.fetch_add(1, std::memory_order_relaxed);
+
+        loop_next_send_ += frame_interval;
+        // Fell far behind (stall)? Resync rather than bursting to catch up
+        if (now - loop_next_send_ > std::chrono::milliseconds(100)) {
+            loop_next_send_ = now;
         }
     }
 }
@@ -496,6 +682,7 @@ RoomAudioStats Room::audio_stats() const {
     s.frames_skipped = mc.frames_skipped;
     s.frames_out = frames_out_.load(std::memory_order_relaxed);
     s.fast_path_forwards = fast_path_forwards_.load(std::memory_order_relaxed);
+    s.lobby_loop_frames = lobby_loop_frames_.load(std::memory_order_relaxed);
     s.participants = participant_count();
     s.bound_participants = bound_count_.load(std::memory_order_relaxed);
     return s;

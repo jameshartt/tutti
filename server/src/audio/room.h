@@ -45,6 +45,7 @@ struct RoomAudioStats {
     uint64_t frames_skipped = 0;   // backlog skip-ahead discards
     uint64_t frames_out = 0;       // mixed packets sent
     uint64_t fast_path_forwards = 0;
+    uint64_t lobby_loop_frames = 0; // hold-music packets sent to solo listeners
     size_t participants = 0;
     size_t bound_participants = 0;
 };
@@ -124,12 +125,34 @@ public:
     /// Telemetry snapshot for logging and the stats API
     RoomAudioStats audio_stats() const;
 
+    /// Load the lobby hold-music loop (raw 48kHz mono s16le PCM) shared by
+    /// all rooms. Call once at startup, BEFORE any room's mixer thread
+    /// starts — the buffer is read-only afterwards. Returns false (feature
+    /// stays disabled) if the file is missing or too short.
+    static bool load_lobby_loop(const std::string& path);
+
+    /// Test hook: inject loop samples directly
+    static void set_lobby_loop_samples(std::vector<int16_t> samples);
+
+    /// Test hook: shrink the 3s start delay and 1s fade for fast tests.
+    /// Call before start().
+    void set_lobby_loop_timing(std::chrono::milliseconds delay,
+                               std::chrono::milliseconds fade) {
+        loop_delay_ = delay;
+        loop_fade_ = fade;
+    }
+
 private:
     /// RT mixer thread function
     void mixer_thread_func();
 
     /// Recompute bound_count_ — caller must hold participants_mutex_
     void recount_bound_locked();
+
+    /// Lobby hold-music: called from the mixer thread every cycle. Streams
+    /// the bossa loop to a participant who is alone in the room (3s after
+    /// they become solo, 1s fade in, 1s fade out when company arrives).
+    void service_lobby_loop(std::chrono::steady_clock::time_point now);
 
     /// Send mixed output to all participants
     void send_outputs();
@@ -181,6 +204,27 @@ private:
     std::atomic<uint64_t> wake_deadline_{0};
     std::atomic<uint64_t> frames_out_{0};
     std::atomic<uint64_t> fast_path_forwards_{0};
+    std::atomic<uint64_t> lobby_loop_frames_{0};
+
+    // ── Lobby hold-music state (mixer thread only, except loop_cancel_) ──
+    enum class LoopState { Idle, Pending, FadeIn, Playing, FadeOut };
+    LoopState loop_state_ = LoopState::Idle;
+    std::string loop_listener_id_;
+    std::chrono::steady_clock::time_point loop_solo_since_{};
+    std::chrono::steady_clock::time_point loop_fade_start_{};
+    std::chrono::steady_clock::time_point loop_next_send_{};
+    double loop_fade_start_gain_ = 0.0;
+    size_t loop_pos_ = 0;
+    std::chrono::milliseconds loop_delay_{3000};
+    std::chrono::milliseconds loop_fade_{1000};
+    // Set by the network thread when real audio is forwarded to anyone in
+    // this room — kills the loop instantly so a mid-fade-out loop can never
+    // interleave with (and garble) real audio on the listener's stream
+    std::atomic<bool> loop_cancel_{false};
+
+    // Shared loop samples, loaded once before any mixer thread starts,
+    // read-only afterwards (no locking needed)
+    static std::vector<int16_t> lobby_loop_;
 };
 
 } // namespace tutti

@@ -96,6 +96,15 @@ int main(int argc, char* argv[]) {
     std::signal(SIGSEGV, crash_handler);
     std::signal(SIGABRT, crash_handler);
 
+    // Load the lobby hold-music loop before any room mixer thread starts
+    // (the buffer is read-only once threads are running)
+    if (tutti::Room::load_lobby_loop("assets/lobby-loop.pcm") ||
+        tutti::Room::load_lobby_loop("../assets/lobby-loop.pcm")) {
+        std::cout << "[Tutti] Lobby loop loaded\n";
+    } else {
+        std::cout << "[Tutti] Lobby loop not found — solo hold music disabled\n";
+    }
+
     // Initialize room manager
     auto room_manager = std::make_shared<tutti::RoomManager>(max_participants);
     room_manager->initialize_default_rooms();

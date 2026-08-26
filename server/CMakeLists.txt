@@ -63,6 +63,7 @@ if(TUTTI_BUILD_TESTS)
     enable_testing()
     add_executable(tutti-tests
         tests/mixer_test.cpp
+        tests/lobby_loop_test.cpp
     )
     target_link_libraries(tutti-tests PRIVATE
         tutti-core

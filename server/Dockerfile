@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=build /src/build/tutti-server .
+COPY --from=build /src/assets/lobby-loop.pcm ./assets/lobby-loop.pcm
 COPY --from=build /src/build/_deps/libdatachannel-build/libdatachannel.so.0.24.1 /usr/local/lib/
 COPY --from=build /src/build/_deps/libwtf-build/output/libwtf.so.0.0.0 /usr/local/lib/
 COPY --from=build /src/build/_deps/libwtf-build/output/libmsquic.so.2.4.14 /usr/local/lib/
