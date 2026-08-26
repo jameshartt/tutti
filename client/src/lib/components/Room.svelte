@@ -608,7 +608,15 @@
 		}
 	}
 
-	async function handleLeave() {
+	// Leaving must FEEL instant: acknowledge the press synchronously, never
+	// block on the network (leaveRoom is a fire-and-forget beacon), and let
+	// the async audio-context close finish in the background. The room-state
+	// reset triggers navigation back to the lobby immediately.
+	let leaving = $state(false);
+
+	function handleLeave() {
+		if (leaving) return;
+		leaving = true;
 		connectAborted = true;
 		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
@@ -619,8 +627,8 @@
 		capture?.stop();
 		playback?.stop();
 		activeTransport = null;
-		await closeAudioContext();
-		await leaveRoom();
+		void closeAudioContext();
+		leaveRoom();
 	}
 
 	onDestroy(() => {
@@ -638,7 +646,7 @@
 	});
 </script>
 
-<div class="room">
+<div class="room" class:leaving>
 	<VacateNotice visible={vacateNotice} />
 
 	<header class="room-header">
@@ -654,7 +662,9 @@
 		</div>
 		<div class="header-actions">
 			<button class="nerd-btn" class:active={nerdMode} onclick={toggleNerdMode} title="Toggle diagnostics" aria-label="Toggle diagnostics">&#9881;</button>
-			<button class="btn btn-ghost leave-btn" onclick={handleLeave}>Leave</button>
+			<button class="btn btn-ghost leave-btn" onclick={handleLeave} disabled={leaving}>
+				{leaving ? 'Leaving…' : 'Leave'}
+			</button>
 		</div>
 	</header>
 
@@ -690,7 +700,9 @@
 				<p>Connection lost.</p>
 				<div class="disconnect-actions">
 					<button class="btn reconnect-btn" onclick={() => handleReconnect()}>Reconnect</button>
-					<button class="btn btn-ghost" onclick={handleLeave}>Leave</button>
+					<button class="btn btn-ghost" onclick={handleLeave} disabled={leaving}>
+					{leaving ? 'Leaving…' : 'Leave'}
+				</button>
 				</div>
 			{:else}
 				<p>Connection lost. Reconnecting shortly&hellip;</p>
@@ -971,6 +983,14 @@
 		color: var(--warn);
 		border-radius: var(--radius-m);
 		font-size: 0.83rem;
+	}
+
+	/* Pressed Leave: acknowledge instantly — dim everything and block
+	   further interaction while navigation back to the lobby happens */
+	.room.leaving {
+		opacity: 0.55;
+		pointer-events: none;
+		transition: opacity 0.15s ease;
 	}
 
 	.codec-warning {
