@@ -278,6 +278,7 @@
 							type: 'client_stats',
 							underruns: s.playbackUnderruns,
 							partial: s.playbackPartialFrames,
+							skips: s.playbackSkipAheads,
 							fill: s.playbackFillLevel,
 							prebuffering: s.playbackPrebuffering,
 							cap_dropped: s.captureDroppedFrames,

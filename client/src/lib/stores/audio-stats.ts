@@ -10,6 +10,7 @@ export interface AudioStats {
 	// Playback worklet
 	playbackUnderruns: number;
 	playbackPartialFrames: number;
+	playbackSkipAheads: number;
 	playbackTotalFrames: number;
 	playbackFillLevel: number;
 	playbackPrebuffering: boolean;
@@ -35,6 +36,7 @@ export interface AudioStats {
 const defaultStats: AudioStats = {
 	playbackUnderruns: 0,
 	playbackPartialFrames: 0,
+	playbackSkipAheads: 0,
 	playbackTotalFrames: 0,
 	playbackFillLevel: 0,
 	playbackPrebuffering: false,
@@ -57,6 +59,7 @@ export const audioStats = writable<AudioStats>(defaultStats);
 export function updatePlaybackStats(stats: {
 	underruns: number;
 	partialFrames: number;
+	skipAheads?: number;
 	totalFrames: number;
 	fillLevel: number;
 	prebuffering: boolean;
@@ -65,6 +68,7 @@ export function updatePlaybackStats(stats: {
 		...s,
 		playbackUnderruns: stats.underruns,
 		playbackPartialFrames: stats.partialFrames,
+		playbackSkipAheads: stats.skipAheads ?? 0,
 		playbackTotalFrames: stats.totalFrames,
 		playbackFillLevel: stats.fillLevel,
 		playbackPrebuffering: stats.prebuffering

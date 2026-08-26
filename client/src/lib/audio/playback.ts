@@ -40,7 +40,7 @@ export async function startPlayback(): Promise<PlaybackHandle> {
 	// Version query busts browser caches — the static worklet is served
 	// without Cache-Control, so heuristic caching can pin stale copies.
 	// Bump it whenever the worklet file changes.
-	await ctx.audioWorklet.addModule('/worklets/playback-processor.js?v=2');
+	await ctx.audioWorklet.addModule('/worklets/playback-processor.js?v=3');
 
 	// Create ring buffer
 	const ringBufferSAB = createRingBufferSAB(RING_BUFFER_CAPACITY);

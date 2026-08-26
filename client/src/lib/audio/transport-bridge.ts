@@ -211,8 +211,13 @@ export class TransportBridge {
 			this.lastRecvSequence = packet.sequence;
 		}
 
-		// Write received samples to playback ring buffer
-		this.playbackWriter.write(packet.samples);
+		// While the loopback test runs, it owns the playback ring: mixing in
+		// network audio (e.g. the solo-room hold music) would double the
+		// producer rate, pin the ring full, and garble both streams. Packet
+		// and sequence stats still run so counters stay truthful.
+		if (!this.loopbackEnabled) {
+			this.playbackWriter.write(packet.samples);
+		}
 
 		// Periodic diagnostic: log every ~1s to confirm data is flowing
 		this.incomingCount++;

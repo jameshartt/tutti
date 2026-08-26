@@ -99,6 +99,7 @@
 		<div class="stat-row">
 			<span>underruns <b>{stats.playbackUnderruns}</b></span>
 			<span>partial <b>{stats.playbackPartialFrames}</b></span>
+			<span>skips <b>{stats.playbackSkipAheads}</b></span>
 			{#if stats.playbackPrebuffering}<span class="warn">PREBUFFERING</span>{/if}
 		</div>
 		<div class="prebuffer-row">

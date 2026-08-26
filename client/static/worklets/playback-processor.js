@@ -25,6 +25,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 		// Diagnostics counters (lightweight integers, no allocations)
 		this._underrunCount = 0;
 		this._partialFrameCount = 0;
+		this._skipAheadCount = 0;
 		this._totalFrames = 0;
 		this._currentFillLevel = 0;
 		this._statsFrameCounter = 0;
@@ -104,6 +105,18 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				// Update local state to reflect the skip
 				this._currentFillLevel = targetFill;
 			}
+		} else if (available > SAMPLES_PER_FRAME * 12) {
+			// Steady-state backlog trim: if the ring pins near-full (a burst,
+			// a stalled tab, or a second producer like the loopback test),
+			// skip ahead to the cushion target. Without this, a pinned ring
+			// keeps its full ~43ms latency and drops writer samples forever —
+			// the buffer only self-corrected on prebuffer exit.
+			const targetFill = SAMPLES_PER_FRAME *
+				Math.max(2, Math.min(this._prebufferFrames, 8));
+			const skip = available - targetFill;
+			Atomics.store(this._pointers, 1, (read + skip) % this._capacity);
+			this._currentFillLevel = targetFill;
+			this._skipAheadCount++;
 		}
 
 		// Re-read after potential skip-ahead
@@ -189,6 +202,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 				type: 'stats',
 				underruns: this._underrunCount,
 				partialFrames: this._partialFrameCount,
+				skipAheads: this._skipAheadCount,
 				totalFrames: this._totalFrames,
 				fillLevel: this._currentFillLevel,
 				prebuffering: this._prebuffering
