@@ -632,6 +632,11 @@
 		playback?.stop();
 		activeTransport = null;
 		void closeAudioContext();
+		// The audio state store outlives this component (module-level).
+		// Without this reset, rejoining mounts a fresh Room that still
+		// reads 'active', skips the Start-audio screen, and sits forever
+		// in local-only mode with no pipeline and no way to start one.
+		setPipelineState('inactive');
 		leaveRoom();
 	}
 
@@ -647,6 +652,11 @@
 		capture?.stop();
 		playback?.stop();
 		activeTransport = null;
+		// Release the mic and reset the module-level pipeline state on ANY
+		// unmount path (browser back, etc.) — a stale 'active' makes the
+		// next Room mount skip the Start-audio screen entirely
+		void closeAudioContext();
+		setPipelineState('inactive');
 	});
 </script>
 
