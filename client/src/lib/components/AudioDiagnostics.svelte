@@ -21,15 +21,26 @@
 		}
 	}
 
-	// Ring buffer capacity (matches SAMPLES_PER_FRAME * 8 in playback.ts / capture.ts)
-	const BUFFER_CAPACITY = 1024;
+	// Ring buffer capacities (match RING_BUFFER_CAPACITY in playback.ts / capture.ts)
+	const PLAYBACK_CAPACITY = 2048;
+	const CAPTURE_CAPACITY = 1024;
 
-	function fillPercent(fillLevel: number): number {
-		return Math.round((fillLevel / BUFFER_CAPACITY) * 100);
+	function fillPercent(fillLevel: number, capacity: number): number {
+		return Math.round((fillLevel / capacity) * 100);
 	}
 
-	function fillClass(fillLevel: number): string {
-		const pct = fillPercent(fillLevel);
+	// Playback health is fill relative to the configured prebuffer cushion,
+	// not to raw capacity — a half-empty big buffer at target is healthy.
+	function playbackFillClass(fillLevel: number): string {
+		const target = Math.max(1, prebufferFrames) * 128;
+		const ratio = fillLevel / target;
+		if (ratio >= 0.75) return 'fill-good';
+		if (ratio >= 0.35) return 'fill-warn';
+		return 'fill-bad';
+	}
+
+	function captureFillClass(fillLevel: number): string {
+		const pct = fillPercent(fillLevel, CAPTURE_CAPACITY);
 		if (pct > 50) return 'fill-good';
 		if (pct > 20) return 'fill-warn';
 		return 'fill-bad';
@@ -43,9 +54,7 @@
 		{ label: 'None', value: 0, hint: '0ms' },
 		{ label: 'Low', value: 2, hint: '~5ms' },
 		{ label: 'Medium', value: 4, hint: '~11ms' },
-		// 8 frames is clamped to the buffer's real max (capacity minus the
-		// writer's one free frame) in the playback worklet → 7 frames
-		{ label: 'High', value: 8, hint: '~19ms' }
+		{ label: 'High', value: 8, hint: '~21ms' }
 	] as const;
 
 	function setPrebuffer(value: number) {
@@ -81,11 +90,11 @@
 			<span class="label">Playback</span>
 			<div class="bar-container">
 				<div
-					class="bar-fill {fillClass(stats.playbackFillLevel)}"
-					style="width: {fillPercent(stats.playbackFillLevel)}%"
+					class="bar-fill {playbackFillClass(stats.playbackFillLevel)}"
+					style="width: {fillPercent(stats.playbackFillLevel, PLAYBACK_CAPACITY)}%"
 				></div>
 			</div>
-			<span class="value">{fillPercent(stats.playbackFillLevel)}%</span>
+			<span class="value">{fillPercent(stats.playbackFillLevel, PLAYBACK_CAPACITY)}%</span>
 		</div>
 		<div class="stat-row">
 			<span>underruns <b>{stats.playbackUnderruns}</b></span>
@@ -111,11 +120,11 @@
 			<span class="label">Capture</span>
 			<div class="bar-container">
 				<div
-					class="bar-fill {fillClass(stats.captureFillLevel)}"
-					style="width: {fillPercent(stats.captureFillLevel)}%"
+					class="bar-fill {captureFillClass(stats.captureFillLevel)}"
+					style="width: {fillPercent(stats.captureFillLevel, CAPTURE_CAPACITY)}%"
 				></div>
 			</div>
-			<span class="value">{fillPercent(stats.captureFillLevel)}%</span>
+			<span class="value">{fillPercent(stats.captureFillLevel, CAPTURE_CAPACITY)}%</span>
 		</div>
 		<div class="stat-row">
 			<span>dropped <b>{stats.captureDroppedFrames}</b></span>

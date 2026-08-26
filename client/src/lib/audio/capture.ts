@@ -30,7 +30,8 @@ export async function startCapture(): Promise<CaptureHandle> {
 	const ctx = getAudioContext();
 
 	// Register the capture worklet
-	await ctx.audioWorklet.addModule('/worklets/capture-processor.js');
+	// Version query busts browser caches (see playback.ts)
+	await ctx.audioWorklet.addModule('/worklets/capture-processor.js?v=2');
 
 	// Get microphone stream
 	const stream = await getMicrophoneStream();

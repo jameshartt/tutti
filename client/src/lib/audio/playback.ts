@@ -10,10 +10,13 @@ import { getAudioContext } from './context.js';
 import { createRingBufferSAB } from './ring-buffer.js';
 import { SAMPLES_PER_FRAME } from './types.js';
 
-// Ring buffer capacity: ~21ms of audio at 48kHz (8 frames)
+// Ring buffer capacity: ~43ms of audio at 48kHz (16 frames)
 // Capacity controls jitter tolerance, not latency — the playback worklet's
 // skip-ahead on prebuffer exit prevents accumulation from adding delay.
-const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 8; // 1024 samples ≈ 21ms
+// Must comfortably exceed the largest prebuffer preset (8 frames): the
+// writer keeps one slot free, so a preset equal to capacity could never
+// fill, and one close to capacity leaves no headroom for network bursts.
+const RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 16; // 2048 samples ≈ 43ms
 
 export interface PlaybackHandle {
 	/** SharedArrayBuffer for writing received audio (Int16 PCM) */
@@ -34,7 +37,10 @@ export async function startPlayback(): Promise<PlaybackHandle> {
 	const ctx = getAudioContext();
 
 	// Register the playback worklet
-	await ctx.audioWorklet.addModule('/worklets/playback-processor.js');
+	// Version query busts browser caches — the static worklet is served
+	// without Cache-Control, so heuristic caching can pin stale copies.
+	// Bump it whenever the worklet file changes.
+	await ctx.audioWorklet.addModule('/worklets/playback-processor.js?v=2');
 
 	// Create ring buffer
 	const ringBufferSAB = createRingBufferSAB(RING_BUFFER_CAPACITY);
