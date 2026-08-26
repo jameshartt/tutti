@@ -14,6 +14,17 @@ import type {
 	MessageCallback,
 	StateCallback
 } from './transport.js';
+import { summarizeCandidate } from './diagnostics.js';
+
+/** Connection-attempt trace for the diagnostics beacon */
+export interface RtcDiagnostics {
+	wsConnected: boolean;
+	answerReceived: boolean;
+	localCandidates: string[];
+	remoteCandidates: string[];
+	iceStates: string[];
+	connStates: string[];
+}
 
 export class WebRTCTransport implements Transport {
 	private pc: RTCPeerConnection | null = null;
@@ -24,9 +35,21 @@ export class WebRTCTransport implements Transport {
 	private messageCallbacks: MessageCallback[] = [];
 	private stateCallbacks: StateCallback[] = [];
 	private _state: TransportState = 'disconnected';
+	private diag: RtcDiagnostics = {
+		wsConnected: false,
+		answerReceived: false,
+		localCandidates: [],
+		remoteCandidates: [],
+		iceStates: [],
+		connStates: []
+	};
 
 	get state(): TransportState {
 		return this._state;
+	}
+
+	getDiagnostics(): RtcDiagnostics {
+		return this.diag;
 	}
 
 	/**
@@ -87,6 +110,9 @@ export class WebRTCTransport implements Transport {
 				// Handle ICE candidates
 				this.pc.onicecandidate = (event) => {
 					if (event.candidate && this.signalingWs) {
+						this.diag.localCandidates.push(
+							summarizeCandidate(event.candidate.candidate)
+						);
 						this.signalingWs.send(
 							JSON.stringify({
 								type: 'ice_candidate',
@@ -97,9 +123,14 @@ export class WebRTCTransport implements Transport {
 					}
 				};
 
+				this.pc.oniceconnectionstatechange = () => {
+					if (this.pc) this.diag.iceStates.push(this.pc.iceConnectionState);
+				};
+
 				this.pc.onconnectionstatechange = () => {
 					if (!this.pc) return;
 					const pcState = this.pc.connectionState;
+					this.diag.connStates.push(pcState);
 					if (pcState === 'disconnected' || pcState === 'closed') {
 						this.setState('disconnected');
 					} else if (pcState === 'failed') {
@@ -174,18 +205,23 @@ export class WebRTCTransport implements Transport {
 		return new Promise((resolve, reject) => {
 			this.signalingWs = new WebSocket(url);
 
-			this.signalingWs.onopen = () => resolve();
+			this.signalingWs.onopen = () => {
+				this.diag.wsConnected = true;
+				resolve();
+			};
 			this.signalingWs.onerror = () => reject(new Error('Signaling connection failed'));
 
 			this.signalingWs.onmessage = async (event) => {
 				const msg = JSON.parse(event.data);
 
 				if (msg.type === 'answer' && this.pc) {
+					this.diag.answerReceived = true;
 					await this.pc.setRemoteDescription({
 						type: 'answer',
 						sdp: msg.sdp
 					});
 				} else if (msg.type === 'ice_candidate' && this.pc) {
+					this.diag.remoteCandidates.push(summarizeCandidate(msg.candidate));
 					await this.pc.addIceCandidate({
 						candidate: msg.candidate,
 						sdpMid: msg.mid

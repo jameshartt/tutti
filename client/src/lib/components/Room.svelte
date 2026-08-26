@@ -14,6 +14,7 @@
 	import { startPlayback, type PlaybackHandle } from '../audio/playback.js';
 	import { TransportBridge } from '../audio/transport-bridge.js';
 	import { createTransport, detectTransportType, getTransportDescription } from '../transport/detect.js';
+	import { reportTransportEvent } from '../transport/diagnostics.js';
 	import { resumeAudioContext, closeAudioContext, getAudioContext, getHardwareLatency } from '../audio/context.js';
 	import { RTTMonitor } from '../latency/rtt-monitor.js';
 	import { latencyBreakdown } from '../latency/breakdown.js';
@@ -195,21 +196,38 @@
 					const transport = createTransport();
 					await wireTransport(transport, wtUrl, 5000, { certHash });
 					connected = true;
+					reportTransportEvent({ stage: 'webtransport', ok: true });
 				} catch (wtErr) {
 					console.warn('[Tutti] WebTransport failed, falling back to WebRTC:', wtErr);
+					reportTransportEvent({
+						stage: 'webtransport',
+						ok: false,
+						error: String(wtErr).slice(0, 200)
+					});
 				}
 			}
 
 			if (!connected) {
+				const { WebRTCTransport } = await import('../transport/webrtc.js');
+				const rtcTransport = new WebRTCTransport();
 				try {
 					setTransportType('webrtc');
 					transportDesc = 'WebRTC DataChannel' + (preferredType === 'webtransport' ? ' (fallback)' : '');
-					const { WebRTCTransport } = await import('../transport/webrtc.js');
-					const rtcTransport = new WebRTCTransport();
 					await wireTransport(rtcTransport, wsUrl, 12000);
+					reportTransportEvent({
+						stage: 'webrtc',
+						ok: true,
+						...rtcTransport.getDiagnostics()
+					});
 				} catch (rtcErr) {
 					console.warn('[Tutti] Transport not connected — audio capture is local only:', rtcErr);
 					transportConnected = false;
+					reportTransportEvent({
+						stage: 'webrtc',
+						ok: false,
+						error: String(rtcErr).slice(0, 200),
+						...rtcTransport.getDiagnostics()
+					});
 				}
 			}
 

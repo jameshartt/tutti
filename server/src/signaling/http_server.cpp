@@ -271,6 +271,22 @@ HttpServer::HttpResponse HttpServer::route(const HttpRequest& req) {
         return {200, "application/json", resp.dump()};
     }
 
+    // Client-side diagnostic beacon (transport failures etc.) — logged to
+    // stdout so field incidents are diagnosable from docker logs
+    if (req.method == "POST" && req.path == "/api/client-log") {
+        if (!check_rate_limit(req.remote_ip)) {
+            return {429, "application/json", R"({"error":"rate_limited"})"};
+        }
+        nlohmann::json j;
+        try {
+            j = nlohmann::json::parse(req.body.substr(0, 2048));
+        } catch (...) {
+            return {400, "application/json", R"({"error":"invalid_json"})"};
+        }
+        std::cout << "[ClientLog] ip=" << req.remote_ip << " " << j.dump() << "\n";
+        return {200, "application/json", R"({"ok":true})"};
+    }
+
     // Extract room name from path: /api/rooms/:name/action
     if (req.path.substr(0, 11) == "/api/rooms/") {
         auto rest = req.path.substr(11);
