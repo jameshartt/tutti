@@ -102,8 +102,18 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
 		// Prebuffer: wait until enough data accumulates before starting
 		// playback, so we have a cushion against timing jitter.
+		// Clamp the target to what the ring buffer can physically hold: the
+		// writer keeps one slot free (full vs empty disambiguation) and
+		// writes whole 128-sample frames, so fill tops out at capacity minus
+		// one frame. An unclamped target equal to capacity is unreachable
+		// and would gate playback in silence forever.
+		const maxPrebufferSamples = this.capacity - SAMPLES_PER_FRAME;
 		if (this.prebuffering) {
-			if (available < SAMPLES_PER_FRAME * this.prebufferFrames) {
+			const targetSamples = Math.min(
+				SAMPLES_PER_FRAME * this.prebufferFrames,
+				maxPrebufferSamples
+			);
+			if (available < targetSamples) {
 				outChannel.fill(0);
 				this.reportStats();
 				return true;
@@ -114,7 +124,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 			// waiting for the first process() call. Advance the read pointer
 			// to keep only the configured cushion, discarding stale samples
 			// that would otherwise add permanent buffer latency.
-			const targetFill = SAMPLES_PER_FRAME * Math.max(1, this.prebufferFrames);
+			const targetFill = Math.max(SAMPLES_PER_FRAME, targetSamples);
 			if (available > targetFill) {
 				const skip = available - targetFill;
 				Atomics.store(this.pointers!, 1, (read + skip) % this.capacity);

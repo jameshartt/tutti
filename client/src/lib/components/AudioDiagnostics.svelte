@@ -43,7 +43,9 @@
 		{ label: 'None', value: 0, hint: '0ms' },
 		{ label: 'Low', value: 2, hint: '~5ms' },
 		{ label: 'Medium', value: 4, hint: '~11ms' },
-		{ label: 'High', value: 8, hint: '~21ms' }
+		// 8 frames is clamped to the buffer's real max (capacity minus the
+		// writer's one free frame) in the playback worklet → 7 frames
+		{ label: 'High', value: 8, hint: '~19ms' }
 	] as const;
 
 	function setPrebuffer(value: number) {
