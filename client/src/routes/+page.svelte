@@ -92,6 +92,12 @@
 		font-weight: 900;
 		font-size: clamp(4rem, 12vw, 6.5rem);
 		letter-spacing: -0.03em;
+		/* background-clip: text only paints inside the layout box, but the
+		   italic overhang of the final "i" leans past it and was sliced
+		   off. Padding widens the paint box (backgrounds cover the padding
+		   box); symmetric so the centered wordmark doesn't shift. */
+		display: inline-block;
+		padding: 0.05em 0.1em;
 		background: linear-gradient(180deg, var(--text-1) 30%, var(--accent-bright) 110%);
 		-webkit-background-clip: text;
 		background-clip: text;
