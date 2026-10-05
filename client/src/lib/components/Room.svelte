@@ -9,6 +9,17 @@
 	import { roomState, leaveRoom, sendLeaveRequest, joinRoom } from '../stores/room.js';
 	import { audioState, setPipelineState, setTransportType } from '../stores/audio.js';
 	import { settings } from '../stores/settings.js';
+	import {
+		micState,
+		getSelectedMicId,
+		clearSelectedMic,
+		startMicWatcher,
+		stopMicWatcher,
+		handleMicTrackEnded,
+		undoAutoSwitch,
+		disableAutoSwitch,
+		dismissMicNotice
+	} from '../stores/microphone.js';
 	import { audioStats, updatePlaybackStats, updateCaptureStats, updateTransportStats, updateContextInfo, updateHardwareOutputMs, updateCodecMode } from '../stores/audio-stats.js';
 	import { opusSupported } from '../audio/opus.js';
 	import { startCapture, type CaptureHandle } from '../audio/capture.js';
@@ -29,6 +40,7 @@
 	let participantId = $derived($roomState.participantId);
 	let pipelineState = $derived($audioState.pipelineState);
 	let nerdMode = $derived($settings.nerdMode);
+	let micNotice = $derived($micState.notice);
 
 	let currentBreakdown: LatencyBreakdown | null = $derived($latencyBreakdown?.breakdown ?? null);
 	let currentLatencyInfo: LatencyInfo | null = $derived($latencyBreakdown?.info ?? null);
@@ -97,8 +109,19 @@
 			// Must be triggered by user gesture
 			await resumeAudioContext();
 
-			// Start capture and playback first (these work independently)
-			capture = await startCapture();
+			// Start capture and playback first (these work independently).
+			// Reopen this session's chosen mic; if it's gone, use the default.
+			const micId = getSelectedMicId();
+			try {
+				capture = await startCapture(micId);
+			} catch (micErr) {
+				if (!micId) throw micErr;
+				console.warn('[Tutti] Selected mic unavailable, using default:', micErr);
+				clearSelectedMic();
+				capture = await startCapture(null);
+			}
+			capture.onTrackEnded(handleMicTrackEnded);
+			void startMicWatcher((id) => capture ? capture.switchDevice(id) : Promise.resolve());
 			playback = await startPlayback();
 			playback.sendConfig({ prebufferFrames });
 
@@ -548,6 +571,7 @@
 		if (pipelineState === 'disconnected') return; // guard double-fire
 
 		// Tear down audio pipeline
+		stopMicWatcher();
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
 		rttMonitor?.stop();
 		rttMonitor = null;
@@ -624,6 +648,7 @@
 		connectAborted = true;
 		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+		stopMicWatcher();
 		rttMonitor?.stop();
 		rttMonitor = null;
 		bridge?.stop();
@@ -645,6 +670,7 @@
 		window.removeEventListener('beforeunload', handleBeforeUnload);
 		if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 		if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+		stopMicWatcher();
 		rttMonitor?.stop();
 		rttMonitor = null;
 		bridge?.stop();
@@ -737,6 +763,28 @@
 			<div class="codec-warning">
 				Weak connection &mdash; switched to compressed audio (slightly more latency,
 				lower fidelity). Full quality returns automatically when the link recovers.
+			</div>
+		{/if}
+
+		{#if micNotice}
+			<div class="mic-notice" role="status">
+				<span class="mic-notice-icon" aria-hidden="true">&#127908;</span>
+				<div class="mic-notice-body">
+					{#if micNotice.kind === 'auto'}
+						<p class="mic-notice-text">
+							New mic detected &mdash; switched to <strong>{micNotice.label}</strong>.
+						</p>
+						<div class="mic-notice-actions">
+							<button class="btn btn-ghost mic-notice-btn" onclick={undoAutoSwitch}>Switch back</button>
+							<button class="btn btn-ghost mic-notice-btn" onclick={disableAutoSwitch}>Don't auto-switch</button>
+						</div>
+					{:else}
+						<p class="mic-notice-text">
+							<strong>{micNotice.label}</strong> was disconnected &mdash; now using the system default mic.
+						</p>
+					{/if}
+				</div>
+				<button class="mic-notice-close" onclick={dismissMicNotice} aria-label="Dismiss">&times;</button>
 			</div>
 		{/if}
 
@@ -1016,6 +1064,65 @@
 		color: var(--warn);
 		border-radius: var(--radius-m);
 		font-size: 0.83rem;
+	}
+
+	.mic-notice {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.7rem;
+		padding: 0.7rem 0.8rem 0.7rem 1rem;
+		margin-bottom: 1rem;
+		background: var(--accent-dim);
+		border: 1px solid rgba(242, 169, 59, 0.35);
+		border-radius: var(--radius-m);
+		animation: slide-down 0.3s var(--ease-snap) both;
+	}
+
+	.mic-notice-icon {
+		font-size: 1rem;
+		line-height: 1.4;
+	}
+
+	.mic-notice-body {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.mic-notice-text {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--text-1);
+		overflow-wrap: anywhere;
+	}
+
+	.mic-notice-text strong {
+		color: var(--accent);
+	}
+
+	.mic-notice-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.55rem;
+	}
+
+	.mic-notice-btn {
+		padding: 0.3rem 0.8rem;
+		font-size: 0.78rem;
+	}
+
+	.mic-notice-close {
+		background: none;
+		border: none;
+		color: var(--text-3);
+		font-size: 1.2rem;
+		line-height: 1;
+		padding: 0 0.2rem;
+		cursor: pointer;
+	}
+
+	.mic-notice-close:hover {
+		color: var(--text-1);
 	}
 
 	.disconnect-message {

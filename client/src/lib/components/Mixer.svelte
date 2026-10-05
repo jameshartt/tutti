@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Participant } from '../audio/types.js';
 	import LatencyDisplay from './LatencyDisplay.svelte';
+	import MicPicker from './MicPicker.svelte';
 
 	let {
 		participants,
@@ -54,6 +55,8 @@
 			<span class="participant-name self-label">You</span>
 			{#if micMuted}<span class="muted-tag">muted</span>{/if}
 		</div>
+
+		<MicPicker />
 
 		<div class="meter-row">
 			<span class="control-label">Mic</span>

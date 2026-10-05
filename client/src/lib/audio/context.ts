@@ -43,11 +43,13 @@ export async function closeAudioContext(): Promise<void> {
 
 /**
  * Request microphone access with all processing disabled.
- * Returns a MediaStream for mono audio capture.
+ * Returns a MediaStream for mono audio capture. A null deviceId means
+ * "whatever the system default input is".
  */
-export async function getMicrophoneStream(): Promise<MediaStream> {
+export async function getMicrophoneStream(deviceId: string | null = null): Promise<MediaStream> {
 	return navigator.mediaDevices.getUserMedia({
 		audio: {
+			...(deviceId ? { deviceId: { exact: deviceId } } : {}),
 			echoCancellation: false,
 			autoGainControl: false,
 			noiseSuppression: false,

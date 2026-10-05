@@ -18,6 +18,14 @@ export interface CaptureHandle {
 	ringBufferSAB: SharedArrayBuffer;
 	/** MessagePort for receiving frame-ready notifications from the capture worklet */
 	capturePort: MessagePort;
+	/**
+	 * Hot-swap the input device without touching the worklet, ring buffer
+	 * or transport — the new source is connected before the old one is
+	 * dropped, so the network stream never stalls. null = system default.
+	 */
+	switchDevice: (deviceId: string | null) => Promise<void>;
+	/** Called when the live mic track ends (device unplugged) */
+	onTrackEnded: (handler: () => void) => void;
 	/** Stop capture and release resources */
 	stop: () => void;
 }
@@ -26,7 +34,7 @@ export interface CaptureHandle {
  * Start capturing audio from the microphone.
  * Returns a handle with the ring buffer SAB and a stop function.
  */
-export async function startCapture(): Promise<CaptureHandle> {
+export async function startCapture(deviceId: string | null = null): Promise<CaptureHandle> {
 	const ctx = getAudioContext();
 
 	// Register the capture worklet
@@ -34,7 +42,7 @@ export async function startCapture(): Promise<CaptureHandle> {
 	await ctx.audioWorklet.addModule('/worklets/capture-processor.js?v=2');
 
 	// Get microphone stream
-	const stream = await getMicrophoneStream();
+	let stream = await getMicrophoneStream(deviceId);
 
 	// Create ring buffer
 	const ringBufferSAB = createRingBufferSAB(RING_BUFFER_CAPACITY);
@@ -54,13 +62,54 @@ export async function startCapture(): Promise<CaptureHandle> {
 	});
 
 	// Connect microphone → worklet
-	const source = ctx.createMediaStreamSource(stream);
+	let source = ctx.createMediaStreamSource(stream);
 	source.connect(workletNode);
+
+	let stopped = false;
+	let endedHandler: (() => void) | null = null;
+	const watchTrack = (s: MediaStream) => {
+		const track = s.getAudioTracks()[0];
+		if (!track) return;
+		track.addEventListener('ended', () => {
+			// Only the live stream's track matters; swapped-out tracks are
+			// stopped by us and must not trigger a recovery
+			if (!stopped && s === stream) endedHandler?.();
+		});
+	};
+	watchTrack(stream);
+
+	// Serialise swaps so rapid picks can't interleave getUserMedia calls
+	let swapChain: Promise<void> = Promise.resolve();
 
 	return {
 		ringBufferSAB,
 		capturePort: workletNode.port,
+		switchDevice(nextId: string | null) {
+			const run = async () => {
+				if (stopped) return;
+				const nextStream = await getMicrophoneStream(nextId);
+				if (stopped) {
+					nextStream.getTracks().forEach((t) => t.stop());
+					return;
+				}
+				const nextSource = ctx.createMediaStreamSource(nextStream);
+				nextSource.connect(workletNode);
+				const oldStream = stream;
+				source.disconnect();
+				source = nextSource;
+				stream = nextStream;
+				oldStream.getTracks().forEach((t) => t.stop());
+				watchTrack(nextStream);
+			};
+			const p = swapChain.then(run);
+			swapChain = p.catch(() => {});
+			return p;
+		},
+		onTrackEnded(handler: () => void) {
+			endedHandler = handler;
+		},
 		stop() {
+			stopped = true;
 			source.disconnect();
 			workletNode.disconnect();
 			stream.getTracks().forEach((t) => t.stop());

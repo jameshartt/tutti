@@ -13,13 +13,16 @@ export interface Settings {
 	alias: string;
 	/** Playback prebuffer frames (0 = no prebuffer, higher = more latency but fewer underruns) */
 	prebufferFrames: number;
+	/** Jump to a newly plugged-in microphone (until the user picks one themselves) */
+	autoSwitchMic: boolean;
 }
 
 const defaultSettings: Settings = {
 	nerdMode: false,
 	fudgeFactorMs: 0,
 	alias: '',
-	prebufferFrames: 0
+	prebufferFrames: 0,
+	autoSwitchMic: true
 };
 
 function createSettingsStore() {
