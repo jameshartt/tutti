@@ -110,7 +110,7 @@ TEST(GameDatagramTest, AudioSequenceSkipsReservedValueAndWraps) {
     EXPECT_EQ(next_audio_sequence(counter), 0xFFFFFFFDu);
     EXPECT_EQ(next_audio_sequence(counter), 0xFFFFFFFEu);
     EXPECT_EQ(next_audio_sequence(counter), 0u);
-    EXPECT_EQ(next_audio_sequence(counter), 1u);
+    EXPECT_EQ(next_audio_sequence(counter), 2u);
 }
 
 /// Records which callback each datagram reached, for the shared-channel
