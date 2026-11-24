@@ -35,7 +35,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check API access
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::The ANTHROPIC_API_KEY secret is empty or missing"; exit 1
+          fi
+          code=$(curl -sS -o /tmp/api.json -w '%{http_code}' https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "{\"model\":\"$REVIEW_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+          if [ "$code" != "200" ]; then
+            echo "::error::Anthropic API returned HTTP $code: $(jq -c '.error' /tmp/api.json)"; exit 1
+          fi
+          echo "API access OK for $REVIEW_MODEL"
+
       - name: Reviewer
+        id: reviewer
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,7 +82,7 @@ jobs:
             --allowedTools "Read,Grep,Glob,Write(/tmp/review.md),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
 
       - name: Verifier
-        if: always()
+        if: success() || steps.reviewer.outcome == 'failure'
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
