@@ -30,6 +30,18 @@ async function runSelfTest(
 	return JSON.parse((await resultEl.textContent()) ?? '{}');
 }
 
+/**
+ * Against a server on the same machine the clock estimate must be tight.
+ * Its uncertainty is half the best round trip; the self-test's own limit
+ * is loose because it also runs on real devices over the internet.
+ */
+function expectLocalClockAccuracy(result: { steps: { name: string; detail?: string }[] }) {
+	const clock = result.steps.find((s) => s.name === 'clock');
+	const match = /±([\d.]+)ms/.exec(clock?.detail ?? '');
+	expect(match, `clock step detail: ${clock?.detail}`).not.toBeNull();
+	expect(Number(match![1])).toBeLessThan(25);
+}
+
 test.describe('game transport', () => {
 	test.skip(!haveBackend, 'needs a real tutti-server (set TUTTI_SERVER_BIN)');
 
@@ -47,6 +59,7 @@ test.describe('game transport', () => {
 		);
 		expect(result.pass).toBe(true);
 		expect(result.transport).toBe('webrtc');
+		expectLocalClockAccuracy(result);
 		await expect(page.getByTestId('verdict')).toHaveText('PASS');
 	});
 
@@ -57,5 +70,6 @@ test.describe('game transport', () => {
 		const result = await runSelfTest(page, 'webtransport', room);
 		expect(result.pass, JSON.stringify(result.steps)).toBe(true);
 		expect(result.transport).toBe('webtransport');
+		expectLocalClockAccuracy(result);
 	});
 });

@@ -223,17 +223,8 @@ void WtTransportServer::on_session_event(const wtf_session_event_t* event) {
 
             const uint8_t* dg = event->datagram_received.data;
             size_t dg_len = event->datagram_received.length;
-            if (is_game_datagram(dg, dg_len)) {
-                // Game traffic: strip the magic, never reaches the audio path
-                size_t body = dg_len - kGameMagicSize;
-                if (body <= kMaxGameDatagramSize &&
-                    server->callbacks_.on_game_datagram) {
-                    server->callbacks_.on_game_datagram(
-                        session.get(), dg + kGameMagicSize, body);
-                }
-            } else if (server->callbacks_.on_datagram) {
-                server->callbacks_.on_datagram(session.get(), dg, dg_len);
-            }
+            // Game traffic is split off here and never reaches the audio path
+            dispatch_datagram(server->callbacks_, session.get(), dg, dg_len);
             break;
         }
 

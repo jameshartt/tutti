@@ -69,6 +69,10 @@ FEC with 10% expected loss. ~100 packets/s.
 ### Timestamp
 
 - Sample offset from session start: `packet_index * 128`
+- Client → server only. On audio the server sends, do not rely on it:
+  mixed PCM packets carry `0`, Opus packets carry a counter that
+  increments by 480 per frame, and lobby-loop packets carry the loop
+  position
 - Used for jitter measurement and reordering if needed
 - Wraps at 2^32 samples = ~24.8 hours at 48kHz
 
@@ -124,9 +128,29 @@ a message may be split across stream reads, and both ends reassemble it.
 On WebRTC they travel on the reliable `control` DataChannel, one message
 per DataChannel message.
 
+### Limits
+
+Enforced by the server on every reliable message from a client:
+
+| Limit | Value | When exceeded |
+|---|---|---|
+| Any control message | 64 KB | Dropped |
+| A `game_*` message | 16 KB | Dropped |
+| `game_*` messages per session | 60 per second sustained, burst of 120 | Dropped |
+| A line on the WebTransport control stream | 256 KB | Dropped; framing resumes at the next newline |
+
+Dropped messages get no error reply. Messages that are not a JSON object
+with a string `type` are ignored.
+
 ### Client → Server
 
 ```json
+// First message on a new connection: attach this transport session to
+// the participant created by POST /api/rooms/:name/join. Everything else
+// is ignored until this succeeds. On success the server sends room_state;
+// on failure an error (see below).
+{"type": "bind", "participant_id": "uuid", "room": "Allegro"}
+
 // Set gain for a specific participant in your mix
 {"type": "gain", "participant_id": "uuid", "value": 0.75}
 
@@ -214,7 +238,7 @@ Join a room.
 {
   "participant_id": "uuid",
   "wt_url": "https://server:4433/wt",
-  "ws_url": "wss://server:4433/ws"
+  "ws_url": "wss://server/ws"
 }
 ```
 

@@ -45,6 +45,15 @@ public:
     void on_datagram(const std::string& participant_id,
                      const uint8_t* data, size_t len);
 
+    /// Unknown message types are logged for the first few, then one in every
+    /// kUnknownLogEvery.
+    static constexpr uint64_t kUnknownLogLimit = 10;
+    static constexpr uint64_t kUnknownLogEvery = 1000;
+
+    uint64_t unknown_messages() const {
+        return unknown_messages_.load(std::memory_order_relaxed);
+    }
+
     uint64_t datagrams_received() const {
         return datagrams_received_.load(std::memory_order_relaxed);
     }
@@ -53,6 +62,7 @@ private:
     std::string room_name_;
     Outbound out_;
     std::atomic<uint64_t> datagrams_received_{0};
+    std::atomic<uint64_t> unknown_messages_{0};
 };
 
 } // namespace tutti

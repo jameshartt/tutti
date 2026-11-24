@@ -288,5 +288,49 @@ TEST(GameReaperTest, FullySilentParticipantsAreStillReaped) {
     EXPECT_EQ(room.participant_count(), 0u);
 }
 
+TEST_F(GameRoutingTest, GameMessageFloodIsRateLimited) {
+    // Far more than the burst, sent as fast as possible
+    const int sent = static_cast<int>(kGameMessageBurst) * 10;
+    for (int i = 0; i < sent; i++) {
+        cb_.on_message(a_.get(), R"({"type":"game_ping","n":1})");
+    }
+    size_t relayed = b_->reliable_of_type("game_ping").size();
+    EXPECT_GE(relayed, static_cast<size_t>(kGameMessageBurst));
+    // Burst plus whatever refilled while the loop ran (well under a second)
+    EXPECT_LE(relayed, static_cast<size_t>(kGameMessageBurst + kGameMessageRate));
+
+    // The limit is per session: the other participant is unaffected
+    cb_.on_message(b_.get(), R"({"type":"game_ping","n":2})");
+    auto from_b = a_->reliable_of_type("game_ping");
+    ASSERT_FALSE(from_b.empty());
+    EXPECT_EQ(from_b.back().value("from", ""), b_id_);
+
+    // And it does not touch other control messages
+    cb_.on_message(a_.get(), R"({"type":"ping","id":9,"t":1.0})");
+    EXPECT_EQ(a_->reliable_of_type("pong").size(), 1u);
+}
+
+TEST_F(GameRoutingTest, UnknownGameTypesAreLoggedSanitisedAndThrottled) {
+    auto room = manager_->get_room(room_name_);
+    ASSERT_TRUE(room);
+
+    testing::internal::CaptureStdout();
+    // A type carrying a newline, trying to forge a second log line
+    json forged = {{"type", "game_x\n[Tutti] forged line"}};
+    cb_.on_message(a_.get(), forged.dump());
+    for (int i = 0; i < 50; i++) {
+        cb_.on_message(a_.get(), R"({"type":"game_nope"})");
+    }
+    std::string log = testing::internal::GetCapturedStdout();
+
+    EXPECT_EQ(room->game().unknown_messages(), 51u);
+    EXPECT_NE(log.find("Ignoring unknown message type 'game_x?[Tutti] forged line'"),
+              std::string::npos) << log;
+    EXPECT_EQ(log.find("\n[Tutti] forged line"), std::string::npos);
+    size_t lines = 0;
+    for (char c : log) lines += (c == '\n');
+    EXPECT_EQ(lines, GameSession::kUnknownLogLimit);
+}
+
 } // namespace
 } // namespace tutti

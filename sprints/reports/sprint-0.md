@@ -19,7 +19,7 @@
 | 0.10 CI container build | Done | `images` job green in 9m38s on a cold cache, including the WebTransport end-to-end test. |
 | 0.11 Branch protection | Open | Manual step M1, after the first CI run. |
 | Q.1 Reviewer and verifier agents | Done | `.claude/agents/racer-reviewer.md`, `racer-verifier.md`. The reviewer was used on this sprint. |
-| Q.2 Review in CI | Written, first run pending | `.github/workflows/review.yml`. M2 is done. |
+| Q.2 Review in CI | Done | `.github/workflows/review.yml` posts a review and an acceptance check on each pull request. It uses a Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`); API keys were refused for billing reasons that were never explained. |
 | Q.3 Sanitizers and fuzzing | Half done | ASan + UBSan build option and CI job; all 39 tests pass under them. Fuzz targets and a thread-sanitizer job are not written yet. |
 | Q.9 Device self-test page | First version done | `/dev/selftest`; used by the end-to-end tests. |
 | Q.10 Sprint report generator | Not started | This report was written by hand. |
@@ -28,10 +28,10 @@
 
 | Suite | Result |
 |---|---|
-| Server unit tests | 39 of 39 pass (15 pre-existing audio tests + 24 new) |
-| Server unit tests under ASan + UBSan | 39 of 39 pass, no reports |
+| Server unit tests | 48 of 48 pass (15 pre-existing audio tests + 33 new) |
+| Server unit tests under ASan + UBSan | pass in CI, no reports |
 | Client type-check | 0 errors |
-| Client unit tests | 16 of 16 pass |
+| Client unit tests | 22 of 22 pass |
 | Client production build | succeeds |
 | End to end, WebRTC, native server | Chromium pass, Firefox pass, WebKit pass |
 | End to end, WebTransport and WebRTC, Docker server | Chromium pass, Firefox pass |
@@ -49,7 +49,18 @@ A fresh agent reviewed the changes without the author's reasoning. Verdict: fail
 | WebTransport server code had no automated coverage | Covered by the Docker end-to-end run and the CI `images` job. |
 | Pre-existing: valid JSON of the wrong shape (for example `{"type":5}`) threw through a C callback and could kill the server | Fixed, with a test of 14 malformed inputs. |
 
-The fixes were re-tested but not re-reviewed by a second fresh agent.
+The fixes were then reviewed again by the CI reviewer and acceptance check on pull request #1. Their findings and what was done:
+
+| Finding (CI review) | Action |
+|---|---|
+| Unknown `game_*` types were logged unescaped and unthrottled, so a client could forge or flood log lines | Fixed: client text is sanitised, and only the first 10 and then every 1000th are logged. Tested. |
+| No rate limit on `game_*` messages | Fixed: 60 per second sustained, burst of 120, per session. Tested. |
+| The "never reaches the audio path" tests bypassed the real demux | Fixed: the server demux is now one shared function with its own tests, and a client test drives the real WebTransport read loops with a fake connection. |
+| `npm run test` failed on a fresh checkout | Fixed: the script runs `svelte-kit sync` first. |
+| A `game` channel opening after the signaling socket closed was dropped | Fixed by reading; not covered by a test. |
+| Protocol document omitted the new size limits, the `bind` message and the server's timestamp behaviour; wrong `ws_url` example | Fixed. |
+| Clock estimate accuracy was only checked loosely | The end-to-end tests now require better than ±25 ms against a local server. |
+| 16 KB message over a real transport, a deliberately broken test in CI (0.9), verifier run on an incomplete item (Q.1) | Not done. |
 
 ## Beyond the plan
 
@@ -61,7 +72,7 @@ The fixes were re-tested but not re-reviewed by a second fresh agent.
 
 - WebKit is covered by Playwright's WebKit build on Linux only; real Safari on an iPhone is manual step M3.
 - No two-person voice session was run with the new build; audio is covered only by the 15 existing tests and the demux tests.
-- Fuzz targets, thread sanitizer, rate limiting of game messages, the report generator, and review in CI.
+- Fuzz targets, thread sanitizer and the report generator.
 - Work items assigned to Opus, Sonnet and Haiku in the plan were mostly done by Fable in one session, except 0.6 (Sonnet). The review was done by a separate Fable session.
 
 ## Open manual steps

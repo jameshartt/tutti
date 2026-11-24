@@ -1,5 +1,7 @@
 #include "session_binder.h"
 
+#include "log_safe.h"
+
 #include <chrono>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -96,6 +98,7 @@ void SessionBinder::handle_message(TransportSession* session,
             binding.session->send_reliable(msg.dump());
         } else if (type.rfind("game_", 0) == 0) {
             if (message.size() > kMaxGameMessageSize) return;
+            if (!binding.game_limit->allow()) return;
             auto room = room_manager_->get_room(binding.room_name);
             if (room) room->on_game_message(binding.participant_id, type, msg);
         } else if (type == "gain") {
@@ -153,7 +156,7 @@ void SessionBinder::handle_message(TransportSession* session,
     }
     std::string type = msg.value("type", "");
     if (type != "bind") {
-        std::cerr << "[SessionBinder] Expected bind message, got: " << type
+        std::cerr << "[SessionBinder] Expected bind message, got: " << log_safe(type)
                   << " from " << sid << "\n";
         return;
     }

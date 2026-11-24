@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 
+#include "game_datagram.h"
+
 namespace tutti {
 
 // Audio packet header: 4-byte sequence + 4-byte timestamp
@@ -97,5 +99,22 @@ public:
     /// Set callbacks for transport events
     virtual void set_callbacks(TransportCallbacks callbacks) = 0;
 };
+
+/// Demultiplex one datagram from a transport that carries audio and game
+/// traffic on the same unreliable channel (WebTransport). Game datagrams
+/// have their magic stripped and go to on_game_datagram only; everything
+/// else goes to on_datagram only. Oversized game datagrams are dropped.
+inline void dispatch_datagram(const TransportCallbacks& callbacks,
+                              TransportSession* session,
+                              const uint8_t* data, size_t len) {
+    if (is_game_datagram(data, len)) {
+        size_t body = len - kGameMagicSize;
+        if (body <= kMaxGameDatagramSize && callbacks.on_game_datagram) {
+            callbacks.on_game_datagram(session, data + kGameMagicSize, body);
+        }
+    } else if (callbacks.on_datagram) {
+        callbacks.on_datagram(session, data, len);
+    }
+}
 
 } // namespace tutti

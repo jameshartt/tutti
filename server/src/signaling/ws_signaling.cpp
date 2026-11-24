@@ -148,7 +148,15 @@ void WsSignaling::create_peer_connection(const std::string& session_id,
     pc->onDataChannel([this, session_id](std::shared_ptr<rtc::DataChannel> dc) {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         auto it = pending_.find(session_id);
-        if (it == pending_.end()) return;
+        if (it == pending_.end()) {
+            // The signaling socket has already closed, which removes the
+            // pending entry. A late "game" channel still belongs to the
+            // established session, so hand it over directly.
+            if (dc->label() == "game" && on_game_channel_) {
+                on_game_channel_(session_id, dc);
+            }
+            return;
+        }
 
         std::string label = dc->label();
         if (label == "audio") {

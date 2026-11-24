@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "transport_interface.h"
+#include "rate_limiter.h"
 #include "rooms/room_manager.h"
 
 namespace tutti {
@@ -15,6 +16,10 @@ namespace tutti {
 constexpr size_t kMaxControlMessageSize = 64 * 1024;
 /// Largest `game_*` message accepted. These can be relayed to a whole room.
 constexpr size_t kMaxGameMessageSize = 16 * 1024;
+/// Sustained rate and burst of `game_*` messages accepted per session.
+/// Fast game traffic (inputs, snapshots) uses datagrams, not this channel.
+constexpr double kGameMessageRate = 60.0;
+constexpr double kGameMessageBurst = 120.0;
 
 /// Server monotonic time in milliseconds (the `server_t` in `pong`).
 double server_time_ms();
@@ -62,6 +67,10 @@ private:
         std::string room_name;
         std::string participant_id;
         std::shared_ptr<TransportSession> session; // prevent premature destruction
+        /// Limits reliable game_* messages from this session. Shared so
+        /// copies of the binding draw on the same bucket.
+        std::shared_ptr<TokenBucket> game_limit =
+            std::make_shared<TokenBucket>(kGameMessageRate, kGameMessageBurst);
     };
 
     // session id → binding info

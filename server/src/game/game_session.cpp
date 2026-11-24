@@ -1,5 +1,7 @@
 #include "game_session.h"
 
+#include "../transport/log_safe.h"
+
 #include <iostream>
 #include <nlohmann/json.hpp>
 
@@ -19,8 +21,14 @@ void GameSession::on_message(const std::string& participant_id,
         return;
     }
 
-    std::cout << "[Game:" << room_name_ << "] Ignoring unknown message type '"
-              << type << "' from " << participant_id << "\n";
+    // Client-controlled, so: sanitised, and logged only for the first few
+    // and then occasionally, so a client cannot flood or forge the log.
+    uint64_t n = unknown_messages_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= kUnknownLogLimit || n % kUnknownLogEvery == 0) {
+        std::cout << "[Game:" << room_name_ << "] Ignoring unknown message type '"
+                  << log_safe(type) << "' from " << log_safe(participant_id)
+                  << " (" << n << " so far)\n";
+    }
 }
 
 void GameSession::on_datagram(const std::string& participant_id,
