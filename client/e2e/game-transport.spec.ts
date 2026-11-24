@@ -53,6 +53,7 @@ test.describe('game transport', () => {
 				expect.objectContaining({ name: 'bind', ok: true }),
 				expect.objectContaining({ name: 'clock', ok: true }),
 				expect.objectContaining({ name: 'game message', ok: true }),
+				expect.objectContaining({ name: 'large message', ok: true }),
 				expect.objectContaining({ name: 'game channel', ok: true }),
 				expect.objectContaining({ name: 'game datagrams', ok: true })
 			])

@@ -194,7 +194,7 @@ private:
         std::chrono::steady_clock::time_point join_time;
         int64_t last_audio_received_ns = 0;  // updated under participants_mutex_
         int64_t last_audio_sent_ns = 0;       // updated under participants_mutex_
-        int64_t last_game_received_ns = 0;    // updated under participants_mutex_
+        int64_t last_game_activity_ns = 0;    // updated under participants_mutex_
         Codec codec = Codec::Pcm;             // read/written under participants_mutex_
         // Codec working state; shared_ptr so the network thread can decode
         // outside the participants lock. Recreated on every codec switch.

@@ -331,7 +331,7 @@ void Room::on_game_datagram(const std::string& participant_id,
         std::lock_guard<std::mutex> lock(participants_mutex_);
         auto it = participants_.find(participant_id);
         if (it == participants_.end()) return;
-        it->second.last_game_received_ns = now_ns();
+        it->second.last_game_activity_ns = now_ns();
     }
     game_.on_datagram(participant_id, data, len);
 }
@@ -352,7 +352,14 @@ bool Room::send_game_datagram(const std::string& participant_id,
         session = it->second.session;
     }
     // Send outside the lock: network I/O must not block the mixer thread
-    return session && session->send_game_datagram(data, len);
+    if (!session || !session->send_game_datagram(data, len)) return false;
+
+    // Like audio, game traffic in either direction counts as activity, so
+    // a participant who only receives (spectating, eliminated) is not reaped
+    std::lock_guard<std::mutex> lock(participants_mutex_);
+    auto it = participants_.find(participant_id);
+    if (it != participants_.end()) it->second.last_game_activity_ns = now_ns();
+    return true;
 }
 
 void Room::set_participant_codec(const std::string& id, Codec codec) {
@@ -465,7 +472,7 @@ size_t Room::reap_stale_participants(std::chrono::nanoseconds inactivity) {
             // Game datagrams count too: a room of muted racers sends no
             // audio in either direction but is very much alive
             int64_t last_activity = std::max(
-                {last_recv, last_sent, p.last_game_received_ns});
+                {last_recv, last_sent, p.last_game_activity_ns});
 
             if (last_activity == 0) {
                 // Never had audio — fall back to join_time

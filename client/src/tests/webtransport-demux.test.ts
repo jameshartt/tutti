@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebTransportTransport } from '../lib/transport/webtransport';
 import { frameGameDatagram } from '../lib/transport/game-datagram';
 
@@ -128,6 +128,26 @@ describe('WebTransportTransport demux', () => {
 		await flush();
 		expect(audio).toEqual([a, a]);
 		expect(game).toEqual([g]);
+	});
+
+	it('keeps delivering audio and game datagrams after a game handler throws', async () => {
+		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+		let calls = 0;
+		transport.onGameDatagram(() => {
+			calls++;
+			throw new Error('decoder bug');
+		});
+		const inbound = FakeWebTransport.last.datagramsIn;
+		inbound.enqueue(frameGameDatagram(Uint8Array.of(0x00, 1)));
+		inbound.enqueue(pcmPacket(1));
+		inbound.enqueue(frameGameDatagram(Uint8Array.of(0x00, 2)));
+		inbound.enqueue(pcmPacket(2));
+		await flush();
+		expect(calls).toBe(2);
+		expect(game).toHaveLength(2);
+		expect(audio).toEqual([pcmPacket(1), pcmPacket(2)]);
+		expect(errors).toHaveBeenCalledTimes(2);
+		errors.mockRestore();
 	});
 
 	it('sends audio unchanged and game datagrams with the magic prefix', async () => {

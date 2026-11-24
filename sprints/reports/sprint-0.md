@@ -28,10 +28,10 @@
 
 | Suite | Result |
 |---|---|
-| Server unit tests | 49 of 49 pass (15 pre-existing audio tests + 34 new) |
+| Server unit tests | 50 of 50 pass (15 pre-existing audio tests + 35 new) |
 | Server unit tests under ASan + UBSan | pass in CI, no reports |
 | Client type-check | 0 errors |
-| Client unit tests | 24 of 24 pass |
+| Client unit tests | 25 of 25 pass |
 | Client production build | succeeds |
 | End to end, WebRTC, native server | Chromium pass, Firefox pass, WebKit pass |
 | End to end, WebTransport and WebRTC, Docker server | Chromium pass, Firefox pass |
@@ -63,7 +63,11 @@ The fixes were then reviewed again by the CI reviewer and acceptance check on pu
 | A partial line left over when a client opens a second control stream corrupted the next message | Fixed: the framer resets on a new stream. Tested at the framer level. |
 | Nothing tested the real ping → pong → server clock wiring | Fixed: new test drives `RTTMonitor` and checks the exported clock, including the sign of the offset. |
 | The clock estimate steps when its best sample leaves the 16-sample window | Not fixed. Nothing uses the clock yet; to be settled in sprint 4 when tick sync is built. |
-| 16 KB message over a real transport, a deliberately broken test in CI (0.9), verifier run on an incomplete item (Q.1) | Not done. |
+| A throwing game handler would silently stop the WebTransport read loop, which also delivers audio | Fixed: handler errors are caught and logged. Tested. |
+| A participant who only receives game datagrams would be reaped | Fixed: sent game datagrams count as activity, as sent audio does. Tested. |
+| No 16 KB message sent over a real transport | Fixed: the self-test sends the largest allowed message and checks it comes back intact, in all end-to-end runs. |
+| A 16 KB `game_ping` relayed at the permitted rate could queue about 1 MB/s on a slow listener's control channel | Not fixed. `game_ping` is a diagnostic; real game messages get per-type limits in sprint 4. |
+| a deliberately broken test in CI (0.9), verifier run on an incomplete item (Q.1) | Not done. |
 
 ## Beyond the plan
 

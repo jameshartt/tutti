@@ -151,7 +151,13 @@ export class WebTransportTransport implements Transport {
 				if (isGameDatagram(value)) {
 					const body = unframeGameDatagram(value);
 					for (const cb of this.gameDatagramCallbacks) {
-						cb(body);
+						// A throwing game handler must never end this loop:
+						// it also delivers audio.
+						try {
+							cb(body);
+						} catch (err) {
+							console.error('[WebTransport] game datagram handler threw', err);
+						}
 					}
 					continue;
 				}

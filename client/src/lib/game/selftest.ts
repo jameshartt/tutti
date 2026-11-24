@@ -238,6 +238,31 @@ export async function runSelfTest(opts: {
 		const back = await pingBack;
 		step('game message', back.from === participantId, `from=${String(back.from).slice(0, 8)}…`);
 
+		// 5b. The largest reliable game message the server accepts (16 KB),
+		// which on WebTransport arrives split across several stream reads
+		const bigNonce = nonce + 1;
+		const LARGEST_GAME_MESSAGE = 16 * 1024;
+		const envelope = JSON.stringify({ type: 'game_ping', n: bigNonce, pad: '' });
+		const pad = 'x'.repeat(LARGEST_GAME_MESSAGE - new TextEncoder().encode(envelope).length);
+		const bigBack = withTimeout(
+			new Promise<Record<string, unknown>>((resolve) => {
+				cleanups.push(
+					onGameMessage('game_ping', (m) => {
+						if (m.n === bigNonce) resolve(m);
+					})
+				);
+			}),
+			5000,
+			'16 KB game_ping broadcast'
+		);
+		sendGameMessage({ type: 'game_ping', n: bigNonce, pad });
+		const big = await bigBack;
+		step(
+			'large message',
+			big.pad === pad && big.from === participantId,
+			`${LARGEST_GAME_MESSAGE} bytes ${big.pad === pad ? 'intact' : 'corrupted'}`
+		);
+
 		// 6. Unreliable game datagrams (the "game" channel may open a moment
 		// after connect on WebRTC)
 		for (let i = 0; i < 100 && !gameDatagramsReady(); i++) await sleep(50);

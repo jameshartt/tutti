@@ -276,6 +276,28 @@ TEST(GameReaperTest, GameDatagramsKeepSilentParticipantsAlive) {
     EXPECT_EQ(room.participant_count(), 2u);
 }
 
+TEST(GameReaperTest, ReceivingGameDatagramsAlsoCountsAsActivity) {
+    Room room("ReaperTest3");
+    auto a = std::make_shared<RecordingSession>("a");
+    auto b = std::make_shared<RecordingSession>("b");
+    ASSERT_TRUE(room.add_participant("pa", "A", a));
+    ASSERT_TRUE(room.add_participant("pb", "B", b));
+
+    const auto timeout = 150ms;
+    const uint8_t dg[] = {0x00};
+
+    // pb sends nothing at all (a spectator); the server only sends to it
+    auto until = std::chrono::steady_clock::now() + 3 * timeout;
+    while (std::chrono::steady_clock::now() < until) {
+        room.on_game_datagram("pa", dg, sizeof(dg));
+        EXPECT_TRUE(room.send_game_datagram("pb", dg, sizeof(dg)));
+        EXPECT_EQ(room.reap_stale_participants(timeout), 0u);
+        std::this_thread::sleep_for(20ms);
+    }
+    EXPECT_EQ(room.participant_count(), 2u);
+    EXPECT_FALSE(b->game().empty());
+}
+
 TEST(GameReaperTest, FullySilentParticipantsAreStillReaped) {
     Room room("ReaperTest2");
     ASSERT_TRUE(room.add_participant(

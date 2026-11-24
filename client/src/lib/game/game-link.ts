@@ -37,7 +37,15 @@ export function setGameTransport(t: Transport | null): void {
 			const handlers = datagramHandlers.get(data[0]);
 			if (!handlers) return;
 			const payload = data.subarray(1);
-			for (const h of handlers) h(payload);
+			for (const h of handlers) {
+				// One faulty handler must not starve the others or reach
+				// the transport's read loop
+				try {
+					h(payload);
+				} catch (err) {
+					console.error('[game-link] datagram handler threw', err);
+				}
+			}
 		});
 	}
 }
