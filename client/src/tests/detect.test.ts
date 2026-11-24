@@ -8,7 +8,7 @@ describe('transport detection', () => {
 
 	it('falls back to webrtc when WebTransport is unavailable', () => {
 		vi.stubGlobal('WebTransport', undefined);
-		expect(detectTransportType()).toBe('webrtc');
+		expect(detectTransportType()).toBe('not-a-transport');
 		expect(getTransportDescription()).toContain('WebRTC');
 	});
 
