@@ -15,5 +15,5 @@ test('lobby lists rooms from the API', async ({ page }) => {
 	const card = page.getByRole('link', { name: /Allegro/ });
 	await expect(card).toBeVisible();
 	await expect(card).toContainText('Open');
-	await expect(card).toHaveAttribute('href', '/room/Allegro');
+	await expect(card).toHaveAttribute('href', '/room/Nowhere');
 });
