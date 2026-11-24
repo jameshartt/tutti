@@ -9,6 +9,7 @@ import { writable } from 'svelte/store';
 import type { Transport } from '../transport/transport.js';
 import { LatencyMeasurer } from '../audio/latency.js';
 import { updateNetworkRTT } from '../stores/audio-stats.js';
+import { ServerClock } from './server-clock.js';
 
 export interface RTTStats {
 	/** Most recent RTT sample in ms */
@@ -30,6 +31,8 @@ export const rttStats = writable<RTTStats>({
 	samples: 0
 });
 
+export const serverClock = new ServerClock();
+
 export class RTTMonitor {
 	private measurer = new LatencyMeasurer();
 	private timer: ReturnType<typeof setInterval> | null = null;
@@ -44,6 +47,7 @@ export class RTTMonitor {
 	}
 
 	stop(): void {
+		serverClock.reset();
 		if (this.timer) {
 			clearInterval(this.timer);
 			this.timer = null;
@@ -51,9 +55,15 @@ export class RTTMonitor {
 	}
 
 	/** Call this when a pong message is received from the server */
-	handlePong(msg: { id: number }): void {
+	handlePong(msg: { id: number; t?: number; server_t?: number }): void {
 		const rtt = this.measurer.handlePong(msg.id);
 		if (rtt === null) return;
+
+		// Server clock sync: the pong echoes our send time `t` and carries
+		// the server's clock at the moment it replied.
+		if (typeof msg.t === 'number' && typeof msg.server_t === 'number') {
+			serverClock.addSample(msg.t, rtt, msg.server_t);
+		}
 
 		this.sampleCount++;
 		const avg = this.measurer.rttMs;

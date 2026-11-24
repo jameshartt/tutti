@@ -4,7 +4,10 @@
 #include <execinfo.h>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <unistd.h>
 
 #include "rooms/room_manager.h"
@@ -156,8 +159,45 @@ int main(int argc, char* argv[]) {
 
     // Wire signaling → RTC transport: when both DataChannels are ready,
     // create an RtcSession and fire it through the binder
+    // WebRTC sessions by id, so a late-opening "game" channel can find
+    // its session. Weak: the binder owns session lifetime.
+    struct RtcSessionIndex {
+        std::mutex mutex;
+        std::unordered_map<std::string, std::weak_ptr<tutti::RtcSession>> by_id;
+    };
+    auto rtc_sessions = std::make_shared<RtcSessionIndex>();
+
+    ws_signaling->set_on_game_channel(
+        [rtc_sessions, binder_callbacks](
+            const std::string& session_id,
+            std::shared_ptr<rtc::DataChannel> game_dc) {
+            std::shared_ptr<tutti::RtcSession> session;
+            {
+                std::lock_guard<std::mutex> lock(rtc_sessions->mutex);
+                auto it = rtc_sessions->by_id.find(session_id);
+                if (it != rtc_sessions->by_id.end()) session = it->second.lock();
+            }
+            if (!session) return;
+
+            // Weak capture: the channel is owned by the session, so a
+            // strong capture here would be a reference cycle.
+            std::weak_ptr<tutti::RtcSession> weak = session;
+            game_dc->onMessage([binder_callbacks, weak](auto data) {
+                auto* binary = std::get_if<rtc::binary>(&data);
+                if (!binary || binary->empty()) return;
+                auto s = weak.lock();
+                if (s && binder_callbacks.on_game_datagram) {
+                    binder_callbacks.on_game_datagram(
+                        s.get(),
+                        reinterpret_cast<const uint8_t*>(binary->data()),
+                        binary->size());
+                }
+            });
+            session->set_game_channel(game_dc);
+        });
+
     ws_signaling->set_on_session_ready(
-        [rtc_transport, binder_callbacks](
+        [rtc_transport, binder_callbacks, rtc_sessions](
             const std::string& session_id,
             std::shared_ptr<rtc::PeerConnection> pc,
             std::shared_ptr<rtc::DataChannel> audio_dc,
@@ -165,6 +205,16 @@ int main(int argc, char* argv[]) {
             auto session = std::make_shared<tutti::RtcSession>(
                 session_id, pc, audio_dc, control_dc);
             std::cout << "[Tutti] WebRTC session established: " << session_id << "\n";
+            {
+                std::lock_guard<std::mutex> lock(rtc_sessions->mutex);
+                // Drop entries whose sessions are gone
+                for (auto it = rtc_sessions->by_id.begin();
+                     it != rtc_sessions->by_id.end();) {
+                    it = it->second.expired() ? rtc_sessions->by_id.erase(it)
+                                              : std::next(it);
+                }
+                rtc_sessions->by_id[session_id] = session;
+            }
 
             // Wire datagram and message callbacks for this session.
             // Capture session shared_ptr to prevent premature destruction.

@@ -241,3 +241,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('playback-processor', PlaybackProcessor);
+
+// Type-check only: makes this file a module so its top-level constants do
+// not collide with the other processor. The served worklet is the static JS.
+export {};

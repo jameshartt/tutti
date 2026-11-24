@@ -1,5 +1,6 @@
 #pragma once
 
+#include "line_framer.h"
 #include "transport_interface.h"
 
 #include <atomic>
@@ -26,16 +27,26 @@ public:
     ~WtSession() override;
 
     bool send_datagram(const uint8_t* data, size_t len) override;
+    bool send_game_datagram(const uint8_t* data, size_t len) override;
     bool send_reliable(const std::string& message) override;
     void close() override;
     std::string id() const override;
     std::string remote_address() const override;
     bool is_connected() const override;
 
+    /// Reassembles control-stream messages split across receive events.
+    /// Only touched from the control stream's receive callback.
+    LineFramer& control_framer() { return control_framer_; }
+
 #ifdef TUTTI_WEBTRANSPORT
     void set_wtf_session(wtf_session_t* s) { wt_session_ = s; }
     wtf_session_t* wtf_session() const { return wt_session_; }
-    void set_control_stream(wtf_stream_t* s) { control_stream_ = s; }
+    void set_control_stream(wtf_stream_t* s) {
+        // A partial line from an earlier stream must not be prepended to
+        // the first message on a new one.
+        if (s != control_stream_) control_framer_.reset();
+        control_stream_ = s;
+    }
     wtf_stream_t* control_stream() const { return control_stream_; }
 #endif
 
@@ -43,6 +54,7 @@ private:
     std::string session_id_;
     std::string remote_addr_;
     std::atomic<bool> connected_{true};
+    LineFramer control_framer_;
 #ifdef TUTTI_WEBTRANSPORT
     wtf_session_t* wt_session_ = nullptr;
     wtf_stream_t* control_stream_ = nullptr;

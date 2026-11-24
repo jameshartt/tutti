@@ -62,30 +62,106 @@ FEC with 10% expected loss. ~100 packets/s.
 - Starts at 0 when session begins
 - Increments by 1 per packet sent
 - Used for packet loss detection (gaps in sequence)
-- Does NOT wrap; uint32 allows ~133 days at 375 pps
+- Never takes the value `0xFFFFFFFF`, which is reserved to mark game
+  datagrams (see below). After `0xFFFFFFFE` the next sequence is `0`
+  (~133 days at 375 pps)
 
 ### Timestamp
 
 - Sample offset from session start: `packet_index * 128`
-- Used for jitter measurement and reordering if needed
+- Meaningful from client to server only. Receivers must not rely on it
+  in packets the server sends:
+  - mixed PCM packets and lobby-loop PCM packets carry `0`
+  - Opus packets carry a per-listener counter that increments by 480 per
+    frame
+  - with exactly two participants and unity gain, PCM packets are
+    forwarded with the sender's timestamp
 - Wraps at 2^32 samples = ~24.8 hours at 48kHz
+
+## Game Datagram Format
+
+Game traffic uses unreliable datagrams too, kept strictly apart from audio.
+Above the transport layer a game datagram is always:
+
+```
+[kind: u8][payload: 0–1099 bytes]
+```
+
+`kind + payload` is at most 1100 bytes. How it is carried depends on the
+transport:
+
+- **WebTransport** has one datagram channel, shared with audio. A game
+  datagram is prefixed with four `0xFF` bytes:
+
+  ```
+   0        4      5
+  +--------+------+----------------+
+  | FF×4   | kind | payload        |
+  +--------+------+----------------+
+  ```
+
+  Those four bytes sit where an audio packet carries its sequence number,
+  and no audio packet ever has sequence `0xFFFFFFFF`, so the two cannot be
+  confused. Receivers check the prefix first and strip it; anything without
+  it goes to the audio path unchanged.
+
+- **WebRTC** uses a third DataChannel labelled `game` (`ordered: false`,
+  `maxRetransmits: 0`), created by the client alongside `audio` and
+  `control`. Datagrams on it carry no prefix. The channel is optional: a
+  session is established as soon as `audio` and `control` are open, and
+  game datagrams become available when `game` opens.
+
+Game datagrams from a session that has not sent `bind` are dropped. They
+count as activity for the server's inactivity reaper, exactly like audio.
+
+### Kinds
+
+| Kind | Name | Direction | Meaning |
+|------|------|-----------|---------|
+| `0x00` | Echo | both | Diagnostic. The server sends the datagram straight back to the sender. Used by `/dev/selftest` and the end-to-end tests. |
+
+Unknown kinds are dropped silently.
 
 ## Control Messages (Reliable Channel)
 
-Control messages are sent over WebTransport bidirectional streams or WebSocket.
-They use JSON for simplicity in Phase 1 (may migrate to binary if needed).
+Control messages are JSON. On WebTransport they travel on one
+client-opened bidirectional stream, one message per line (`\n`-terminated);
+a message may be split across stream reads, and both ends reassemble it.
+On WebRTC they travel on the reliable `control` DataChannel, one message
+per DataChannel message.
+
+### Limits
+
+Enforced by the server on every reliable message from a client:
+
+| Limit | Value | When exceeded |
+|---|---|---|
+| Any control message | 64 KB | Dropped |
+| A `game_*` message | 16 KB | Dropped |
+| `game_*` messages per session | 60 per second sustained, burst of 120 | Dropped |
+| A line on the WebTransport control stream | 256 KB | Dropped; framing resumes at the next newline |
+
+Dropped messages get no error reply. Messages that are not a JSON object
+with a string `type` are ignored.
 
 ### Client → Server
 
 ```json
+// First message on a new connection: attach this transport session to
+// the participant created by POST /api/rooms/:name/join. Everything else
+// is ignored until this succeeds. On success the server sends room_state;
+// on failure an error (see below).
+{"type": "bind", "participant_id": "uuid", "room": "Allegro"}
+
 // Set gain for a specific participant in your mix
 {"type": "gain", "participant_id": "uuid", "value": 0.75}
 
 // Mute/unmute a participant in your mix
 {"type": "mute", "participant_id": "uuid", "muted": true}
 
-// Ping for latency measurement
-{"type": "ping", "id": 12345, "t": 1700000000000}
+// Ping for latency measurement and clock sync. `t` is the client's
+// send time in ms on its own monotonic clock; it is echoed back untouched.
+{"type": "ping", "id": 12345, "t": 81234.5}
 
 // Switch wire codec (both directions for this participant).
 // Sent when the client's link monitor detects a weak/recovered link.
@@ -93,14 +169,21 @@ They use JSON for simplicity in Phase 1 (may migrate to binary if needed).
 
 // Client-side audio health beacon (every ~10s), logged server-side
 {"type": "client_stats", "underruns": 0, "gaps": 0, "rtt": 23.5, "codec": "pcm", ...}
+
+// Any type starting with "game_" is routed to the room's game session.
+// Unknown game_ types are logged and ignored.
+// Diagnostic: relayed to every participant in the room (see below).
+{"type": "game_ping", "n": 7}
 ```
+
+Types the server does not recognise are ignored.
 
 ### Server → Client
 
 ```json
 // Room state update
 {"type": "room_state", "participants": [
-  {"id": "uuid", "name": "Alice", "joined_at": 1700000000}
+  {"id": "uuid", "name": "Alice"}
 ]}
 
 // Participant joined
@@ -109,11 +192,16 @@ They use JSON for simplicity in Phase 1 (may migrate to binary if needed).
 // Participant left
 {"type": "participant_left", "id": "uuid"}
 
-// Pong for latency measurement
-{"type": "pong", "id": 12345, "client_t": 1700000000000, "server_t": 1700000000001}
+// Pong: the ping echoed back with its type changed, plus `server_t`, the
+// server's monotonic clock in ms (fractional) at the moment it replied.
+// Clients estimate the clock offset as server_t - (t + rtt / 2).
+{"type": "pong", "id": 12345, "t": 81234.5, "server_t": 5123456.789}
 
-// Server processing time report
-{"type": "server_timing", "mix_us": 45}
+// Bind failed
+{"type": "error", "error": "room_not_found"}   // or "participant_not_found"
+
+// game_ping relayed to everyone in the room, stamped with the sender
+{"type": "game_ping", "n": 7, "from": "uuid"}
 
 // Vacate request notification
 {"type": "vacate_request"}
@@ -151,9 +239,8 @@ Join a room.
 ```json
 {
   "participant_id": "uuid",
-  "session_token": "token",
   "wt_url": "https://server:4433/wt",
-  "ws_url": "wss://server:4433/ws"
+  "ws_url": "wss://server/ws"
 }
 ```
 

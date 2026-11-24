@@ -11,6 +11,10 @@ namespace tutti {
 WsSignaling::WsSignaling() = default;
 WsSignaling::~WsSignaling() { stop(); }
 
+void WsSignaling::set_on_game_channel(OnGameChannel callback) {
+    on_game_channel_ = std::move(callback);
+}
+
 void WsSignaling::set_on_session_ready(OnSessionReady callback) {
     on_session_ready_ = std::move(callback);
 }
@@ -144,20 +148,40 @@ void WsSignaling::create_peer_connection(const std::string& session_id,
     pc->onDataChannel([this, session_id](std::shared_ptr<rtc::DataChannel> dc) {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         auto it = pending_.find(session_id);
-        if (it == pending_.end()) return;
+        if (it == pending_.end()) {
+            // The signaling socket has already closed, which removes the
+            // pending entry. A late "game" channel still belongs to the
+            // established session, so hand it over directly.
+            if (dc->label() == "game" && on_game_channel_) {
+                on_game_channel_(session_id, dc);
+            }
+            return;
+        }
 
         std::string label = dc->label();
         if (label == "audio") {
             it->second.audio_dc = dc;
         } else if (label == "control") {
             it->second.control_dc = dc;
+        } else if (label == "game") {
+            it->second.game_dc = dc;
         }
 
-        // Check if both channels are ready
-        if (it->second.audio_dc && it->second.control_dc &&
-            on_session_ready_) {
+        // The session is ready once audio + control exist. Fire exactly
+        // once: further channels (e.g. "game") must not re-create it.
+        if (!it->second.ready_fired && it->second.audio_dc &&
+            it->second.control_dc && on_session_ready_) {
+            it->second.ready_fired = true;
             on_session_ready_(session_id, it->second.pc,
                             it->second.audio_dc, it->second.control_dc);
+        }
+
+        // The game channel is optional and may arrive before or after the
+        // other two; hand it over once the session exists.
+        if (it->second.ready_fired && it->second.game_dc && on_game_channel_) {
+            auto game_dc = std::move(it->second.game_dc);
+            it->second.game_dc = nullptr;
+            on_game_channel_(session_id, game_dc);
         }
     });
 

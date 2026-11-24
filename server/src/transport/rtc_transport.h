@@ -30,17 +30,24 @@ public:
     ~RtcSession() override;
 
     bool send_datagram(const uint8_t* data, size_t len) override;
+    bool send_game_datagram(const uint8_t* data, size_t len) override;
     bool send_reliable(const std::string& message) override;
     void close() override;
     std::string id() const override;
     std::string remote_address() const override;
     bool is_connected() const override;
 
+    /// Attach the optional unreliable "game" DataChannel. It may open
+    /// after the session is established (or never, for older clients).
+    void set_game_channel(std::shared_ptr<rtc::DataChannel> game_dc);
+
 private:
     std::string session_id_;
     std::shared_ptr<rtc::PeerConnection> pc_;
     std::shared_ptr<rtc::DataChannel> audio_dc_;   // unreliable, unordered
     std::shared_ptr<rtc::DataChannel> control_dc_; // reliable, ordered
+    std::shared_ptr<rtc::DataChannel> game_dc_;    // unreliable, unordered; optional
+    mutable std::mutex game_dc_mutex_;
     std::atomic<bool> connected_{true};
 };
 

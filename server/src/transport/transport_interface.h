@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 
+#include "game_datagram.h"
+
 namespace tutti {
 
 // Audio packet header: 4-byte sequence + 4-byte timestamp
@@ -41,6 +43,13 @@ public:
     /// Send an unreliable audio datagram to this participant
     virtual bool send_datagram(const uint8_t* data, size_t len) = 0;
 
+    /// Send an unreliable game datagram: [kind u8][payload...]. The
+    /// transport adds whatever framing it needs to keep it apart from
+    /// audio. Default: transport has no game channel.
+    virtual bool send_game_datagram(const uint8_t* /*data*/, size_t /*len*/) {
+        return false;
+    }
+
     /// Send a reliable control message (JSON string)
     virtual bool send_reliable(const std::string& message) = 0;
 
@@ -61,6 +70,10 @@ public:
 struct TransportCallbacks {
     /// Called when an unreliable datagram is received
     std::function<void(TransportSession*, const uint8_t*, size_t)> on_datagram;
+
+    /// Called when an unreliable game datagram is received. The data is
+    /// [kind u8][payload...] with any transport framing already removed.
+    std::function<void(TransportSession*, const uint8_t*, size_t)> on_game_datagram;
 
     /// Called when a reliable message is received
     std::function<void(TransportSession*, const std::string&)> on_message;
@@ -86,5 +99,22 @@ public:
     /// Set callbacks for transport events
     virtual void set_callbacks(TransportCallbacks callbacks) = 0;
 };
+
+/// Demultiplex one datagram from a transport that carries audio and game
+/// traffic on the same unreliable channel (WebTransport). Game datagrams
+/// have their magic stripped and go to on_game_datagram only; everything
+/// else goes to on_datagram only. Oversized game datagrams are dropped.
+inline void dispatch_datagram(const TransportCallbacks& callbacks,
+                              TransportSession* session,
+                              const uint8_t* data, size_t len) {
+    if (is_game_datagram(data, len)) {
+        size_t body = len - kGameMagicSize;
+        if (body <= kMaxGameDatagramSize && callbacks.on_game_datagram) {
+            callbacks.on_game_datagram(session, data + kGameMagicSize, body);
+        }
+    } else if (callbacks.on_datagram) {
+        callbacks.on_datagram(session, data, len);
+    }
+}
 
 } // namespace tutti

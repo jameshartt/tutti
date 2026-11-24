@@ -24,11 +24,20 @@ public:
         std::shared_ptr<rtc::DataChannel> audio_dc,
         std::shared_ptr<rtc::DataChannel> control_dc)>;
 
+    /// Callback when the optional unreliable "game" DataChannel opens.
+    /// Always fires after OnSessionReady for the same session.
+    using OnGameChannel = std::function<void(
+        const std::string& session_id,
+        std::shared_ptr<rtc::DataChannel> game_dc)>;
+
     WsSignaling();
     ~WsSignaling();
 
     /// Set callback for when a session is fully established
     void set_on_session_ready(OnSessionReady callback);
+
+    /// Set callback for when a session's game channel opens
+    void set_on_game_channel(OnGameChannel callback);
 
     /// Start the WebSocket signaling server
     bool listen(const std::string& address, uint16_t port);
@@ -49,6 +58,7 @@ private:
                                  const std::string& offer_sdp);
 
     OnSessionReady on_session_ready_;
+    OnGameChannel on_game_channel_;
     std::atomic<bool> running_{false};
 
     struct PendingSession {
@@ -56,6 +66,8 @@ private:
         std::shared_ptr<rtc::WebSocket> ws;
         std::shared_ptr<rtc::DataChannel> audio_dc;
         std::shared_ptr<rtc::DataChannel> control_dc;
+        std::shared_ptr<rtc::DataChannel> game_dc;
+        bool ready_fired = false;
     };
 
     std::unordered_map<std::string, PendingSession> pending_;

@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "codec.h"
+#include "game/game_session.h"
 #include "mixer.h"
 #include "transport/transport_interface.h"
 
@@ -82,11 +83,28 @@ public:
     void remove_participant(const std::string& id);
 
     /// Remove stale participants (unbound or inactive). Returns count reaped.
-    size_t reap_stale_participants();
+    /// `inactivity` is overridable for tests.
+    size_t reap_stale_participants(
+        std::chrono::nanoseconds inactivity = kInactivityTimeout);
 
     /// Handle incoming audio datagram from a participant
     void on_audio_received(const std::string& participant_id,
                            const uint8_t* data, size_t len);
+
+    /// Handle an incoming game datagram ([kind][payload]) from a participant.
+    /// Counts as activity for the reaper, then goes to the GameSession.
+    void on_game_datagram(const std::string& participant_id,
+                          const uint8_t* data, size_t len);
+
+    /// Handle a reliable `game_*` message from a participant
+    void on_game_message(const std::string& participant_id,
+                         const std::string& type, const nlohmann::json& msg);
+
+    /// Send a game datagram to one participant (false if not bound)
+    bool send_game_datagram(const std::string& participant_id,
+                            const uint8_t* data, size_t len);
+
+    GameSession& game() { return game_; }
 
     /// Set gain for a participant's mix
     void set_gain(const std::string& listener_id,
@@ -176,6 +194,7 @@ private:
         std::chrono::steady_clock::time_point join_time;
         int64_t last_audio_received_ns = 0;  // updated under participants_mutex_
         int64_t last_audio_sent_ns = 0;       // updated under participants_mutex_
+        int64_t last_game_activity_ns = 0;    // updated under participants_mutex_
         Codec codec = Codec::Pcm;             // read/written under participants_mutex_
         // Codec working state; shared_ptr so the network thread can decode
         // outside the participants lock. Recreated on every codec switch.
@@ -183,6 +202,9 @@ private:
     };
     std::unordered_map<std::string, Participant> participants_;
     mutable std::mutex participants_mutex_;
+
+    // Game plumbing for this room (constructed after the members above)
+    GameSession game_;
 
     // Password for claimed rooms
     std::string password_;
