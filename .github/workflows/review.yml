@@ -59,7 +59,6 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          show_full_output: true
           prompt: |
             Follow the instructions in .claude/agents/racer-reviewer.md exactly,
             acting as that reviewer.
@@ -90,7 +89,6 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          show_full_output: true
           prompt: |
             Follow the instructions in .claude/agents/racer-verifier.md exactly,
             acting as that verifier.
