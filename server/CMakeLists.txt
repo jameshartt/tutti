@@ -7,6 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Options ──────────────────────────────────────────────────────────────────
 option(TUTTI_BUILD_TESTS "Build unit tests" ON)
+option(TUTTI_BUILD_FUZZERS "Build fuzz targets (libFuzzer with Clang, a random-input smoke driver otherwise)" OFF)
 option(TUTTI_ENABLE_WEBTRANSPORT "Build with WebTransport support (msquic + libwtf)" OFF)
 
 set(TUTTI_SANITIZE "" CACHE STRING
@@ -26,6 +27,8 @@ add_library(tutti-core STATIC
     src/transport/session_binder.h
     src/transport/game_datagram.h
     src/transport/line_framer.h
+    src/transport/log_safe.h
+    src/transport/rate_limiter.h
     src/game/game_session.cpp
     src/game/game_session.h
     src/audio/codec.cpp
@@ -92,4 +95,25 @@ if(TUTTI_BUILD_TESTS)
     )
     include(GoogleTest)
     gtest_discover_tests(tutti-tests)
+endif()
+
+# ── Fuzz targets ─────────────────────────────────────────────────────────────
+# Everything that parses bytes from the network. With Clang these are real
+# libFuzzer binaries (combine with -DTUTTI_SANITIZE=address,undefined);
+# with other compilers they run a fixed number of mutated seed inputs.
+if(TUTTI_BUILD_FUZZERS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Coverage feedback from our own code, so the fuzzer can explore it
+        target_compile_options(tutti-core PUBLIC -fsanitize=fuzzer-no-link)
+    endif()
+    foreach(fuzzer fuzz_line_framer fuzz_datagram_demux fuzz_control_message)
+        add_executable(${fuzzer} fuzz/${fuzzer}.cpp)
+        target_link_libraries(${fuzzer} PRIVATE tutti-core)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${fuzzer} PRIVATE -fsanitize=fuzzer)
+            target_link_options(${fuzzer} PRIVATE -fsanitize=fuzzer)
+        else()
+            target_sources(${fuzzer} PRIVATE fuzz/standalone_driver.cpp)
+        endif()
+    endforeach()
 endif()

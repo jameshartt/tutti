@@ -16,20 +16,17 @@ Where a step is only an approval, Claude can do the work once you say yes.
 
 ## Sprint 0
 
-### M1 Approve branch protection (item 0.11)
-- **Time:** 1 minute.
-- **Do:** Reply "yes, protect main". Claude sets the rule with the GitHub CLI.
-- **Check:** a pull request with a failing check shows the merge button disabled.
+### M1 Approve branch protection (item 0.11) — done
+- `main` requires the five build and test checks to pass before a pull request can merge. Force pushes and deletion are blocked.
+- As the repository owner you can still bypass this. Say "enforce for admins too" to remove that.
 
-### M2 Connect Claude to the repository for automated review (item Q.2)
-- **Time:** 5 minutes.
-- **Do:**
-  1. Go to https://console.anthropic.com/settings/keys and create an API key named `tutti-ci`. Copy it.
-  2. On GitHub, open the `tutti` repository → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**.
-  3. Name it `ANTHROPIC_API_KEY`, paste the key, and click **Add secret**.
-  4. Tell Claude "M2 done".
-- **Check:** the next pull request gets a review comment within a few minutes.
-- **Until this is done:** Claude runs the same review and verification from this session instead of from CI, so nothing is blocked.
+### M2 Connect Claude to the repository for automated review (item Q.2) — done
+- The review runs on your Claude subscription through the `CLAUDE_CODE_OAUTH_TOKEN` repository secret.
+- **If reviews stop working** (the token was revoked or expired):
+  1. In a terminal on a machine with Claude Code, run `claude setup-token` and sign in.
+  2. On GitHub, open the `tutti` repository → **Settings** → **Secrets and variables** → **Actions**, and update `CLAUDE_CODE_OAUTH_TOKEN` with the new value.
+- **To change the review model:** add a repository variable `RACER_REVIEW_MODEL` under the same page's **Variables** tab, for example `claude-opus-5-5`.
+- A Console API key in `ANTHROPIC_API_KEY` is supported by the workflow but was refused for billing reasons on this account; that secret can be deleted.
 
 ### M2b Let WebKit tests run on this machine (done, no action needed)
 - Playwright's WebKit needs three system libraries. They are unpacked without root into `~/.cache/tutti-webkit-libs`.
