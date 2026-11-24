@@ -45,7 +45,7 @@ jobs:
           code=$(curl -sS -o /tmp/api.json -w '%{http_code}' https://api.anthropic.com/v1/messages \
             -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
-            -d "{\"model\":\"$REVIEW_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+            -d "{\"model\":\"$REVIEW_MODEL\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word ok.\"}]}")
           if [ "$code" != "200" ]; then
             echo "::error::Anthropic API returned HTTP $code: $(jq -c '.error' /tmp/api.json)"; exit 1
           fi
