@@ -28,10 +28,10 @@
 
 | Suite | Result |
 |---|---|
-| Server unit tests | 48 of 48 pass (15 pre-existing audio tests + 33 new) |
+| Server unit tests | 49 of 49 pass (15 pre-existing audio tests + 34 new) |
 | Server unit tests under ASan + UBSan | pass in CI, no reports |
 | Client type-check | 0 errors |
-| Client unit tests | 22 of 22 pass |
+| Client unit tests | 24 of 24 pass |
 | Client production build | succeeds |
 | End to end, WebRTC, native server | Chromium pass, Firefox pass, WebKit pass |
 | End to end, WebTransport and WebRTC, Docker server | Chromium pass, Firefox pass |
@@ -60,6 +60,9 @@ The fixes were then reviewed again by the CI reviewer and acceptance check on pu
 | A `game` channel opening after the signaling socket closed was dropped | Fixed by reading; not covered by a test. |
 | Protocol document omitted the new size limits, the `bind` message and the server's timestamp behaviour; wrong `ws_url` example | Fixed. |
 | Clock estimate accuracy was only checked loosely | The end-to-end tests now require better than ±25 ms against a local server. |
+| A partial line left over when a client opens a second control stream corrupted the next message | Fixed: the framer resets on a new stream. Tested at the framer level. |
+| Nothing tested the real ping → pong → server clock wiring | Fixed: new test drives `RTTMonitor` and checks the exported clock, including the sign of the offset. |
+| The clock estimate steps when its best sample leaves the 16-sample window | Not fixed. Nothing uses the clock yet; to be settled in sprint 4 when tick sync is built. |
 | 16 KB message over a real transport, a deliberately broken test in CI (0.9), verifier run on an incomplete item (Q.1) | Not done. |
 
 ## Beyond the plan

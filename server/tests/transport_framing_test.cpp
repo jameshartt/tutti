@@ -77,6 +77,14 @@ TEST(LineFramerTest, OversizedLineIsDroppedAndFramingRecovers) {
     EXPECT_EQ(lines[0], "ok");
 }
 
+TEST(LineFramerTest, ResetDropsPartialLine) {
+    LineFramer f;
+    EXPECT_TRUE(feed_all(f, {"{\"type\":\"half"}).empty());
+    f.reset();
+    EXPECT_EQ(feed_all(f, {"{\"type\":\"bind\"}\n"}),
+              (std::vector<std::string>{"{\"type\":\"bind\"}"}));
+}
+
 TEST(GameDatagramTest, MagicPrefixIdentifiesGameDatagrams) {
     uint8_t game[] = {0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x42};
     EXPECT_TRUE(is_game_datagram(game, sizeof(game)));

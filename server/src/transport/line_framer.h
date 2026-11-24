@@ -13,6 +13,13 @@ class LineFramer {
 public:
     explicit LineFramer(size_t max_line = 256 * 1024) : max_line_(max_line) {}
 
+    /// Forget any partial line (for example when the underlying stream is
+    /// replaced by a new one).
+    void reset() {
+        buf_.clear();
+        discarding_ = false;
+    }
+
     /// Feed a fragment; `on_line` is called once per complete non-empty
     /// line, without the trailing newline (or a trailing '\r').
     template <typename F>

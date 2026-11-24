@@ -41,7 +41,12 @@ public:
 #ifdef TUTTI_WEBTRANSPORT
     void set_wtf_session(wtf_session_t* s) { wt_session_ = s; }
     wtf_session_t* wtf_session() const { return wt_session_; }
-    void set_control_stream(wtf_stream_t* s) { control_stream_ = s; }
+    void set_control_stream(wtf_stream_t* s) {
+        // A partial line from an earlier stream must not be prepended to
+        // the first message on a new one.
+        if (s != control_stream_) control_framer_.reset();
+        control_stream_ = s;
+    }
     wtf_stream_t* control_stream() const { return control_stream_; }
 #endif
 

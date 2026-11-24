@@ -69,11 +69,13 @@ FEC with 10% expected loss. ~100 packets/s.
 ### Timestamp
 
 - Sample offset from session start: `packet_index * 128`
-- Client → server only. On audio the server sends, do not rely on it:
-  mixed PCM packets carry `0`, Opus packets carry a counter that
-  increments by 480 per frame, and lobby-loop packets carry the loop
-  position
-- Used for jitter measurement and reordering if needed
+- Meaningful from client to server only. Receivers must not rely on it
+  in packets the server sends:
+  - mixed PCM packets and lobby-loop PCM packets carry `0`
+  - Opus packets carry a per-listener counter that increments by 480 per
+    frame
+  - with exactly two participants and unity gain, PCM packets are
+    forwarded with the sender's timestamp
 - Wraps at 2^32 samples = ~24.8 hours at 48kHz
 
 ## Game Datagram Format
