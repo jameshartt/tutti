@@ -147,3 +147,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('capture-processor', CaptureProcessor);
+
+// Type-check only: makes this file a module so its top-level constants do
+// not collide with the other processor. The served worklet is the static JS.
+export {};

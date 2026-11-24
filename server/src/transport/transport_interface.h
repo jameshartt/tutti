@@ -41,6 +41,13 @@ public:
     /// Send an unreliable audio datagram to this participant
     virtual bool send_datagram(const uint8_t* data, size_t len) = 0;
 
+    /// Send an unreliable game datagram: [kind u8][payload...]. The
+    /// transport adds whatever framing it needs to keep it apart from
+    /// audio. Default: transport has no game channel.
+    virtual bool send_game_datagram(const uint8_t* /*data*/, size_t /*len*/) {
+        return false;
+    }
+
     /// Send a reliable control message (JSON string)
     virtual bool send_reliable(const std::string& message) = 0;
 
@@ -61,6 +68,10 @@ public:
 struct TransportCallbacks {
     /// Called when an unreliable datagram is received
     std::function<void(TransportSession*, const uint8_t*, size_t)> on_datagram;
+
+    /// Called when an unreliable game datagram is received. The data is
+    /// [kind u8][payload...] with any transport framing already removed.
+    std::function<void(TransportSession*, const uint8_t*, size_t)> on_game_datagram;
 
     /// Called when a reliable message is received
     std::function<void(TransportSession*, const std::string&)> on_message;

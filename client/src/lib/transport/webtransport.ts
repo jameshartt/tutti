@@ -13,12 +13,19 @@ import type {
 	MessageCallback,
 	StateCallback
 } from './transport.js';
+import {
+	isGameDatagram,
+	frameGameDatagram,
+	unframeGameDatagram,
+	MAX_GAME_DATAGRAM_SIZE
+} from './game-datagram.js';
 
 export class WebTransportTransport implements Transport {
 	private wt: WebTransport | null = null;
 	private controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 	private datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
 	private datagramCallbacks: DatagramCallback[] = [];
+	private gameDatagramCallbacks: DatagramCallback[] = [];
 	private messageCallbacks: MessageCallback[] = [];
 	private stateCallbacks: StateCallback[] = [];
 	private _state: TransportState = 'disconnected';
@@ -88,6 +95,19 @@ export class WebTransportTransport implements Transport {
 		});
 	}
 
+	get gameDatagramsReady(): boolean {
+		return !!this.datagramWriter && this._state === 'connected';
+	}
+
+	sendGameDatagram(data: Uint8Array): void {
+		if (data.byteLength === 0 || data.byteLength > MAX_GAME_DATAGRAM_SIZE) return;
+		this.sendDatagram(frameGameDatagram(data));
+	}
+
+	onGameDatagram(callback: DatagramCallback): void {
+		this.gameDatagramCallbacks.push(callback);
+	}
+
 	sendReliable(message: string): void {
 		if (!this.controlWriter) return;
 		const encoded = new TextEncoder().encode(message + '\n');
@@ -127,6 +147,14 @@ export class WebTransportTransport implements Transport {
 			while (true) {
 				const { value, done } = await reader.read();
 				if (done) break;
+				// Demux before anything audio-related sees the datagram
+				if (isGameDatagram(value)) {
+					const body = unframeGameDatagram(value);
+					for (const cb of this.gameDatagramCallbacks) {
+						cb(body);
+					}
+					continue;
+				}
 				for (const cb of this.datagramCallbacks) {
 					cb(value);
 				}

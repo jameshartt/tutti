@@ -29,6 +29,7 @@
 	import { reportTransportEvent } from '../transport/diagnostics.js';
 	import { resumeAudioContext, closeAudioContext, getAudioContext, getHardwareLatency } from '../audio/context.js';
 	import { RTTMonitor } from '../latency/rtt-monitor.js';
+	import { setGameTransport, dispatchGameMessage, type GameMessage } from '../game/game-link.js';
 	import { latencyBreakdown } from '../latency/breakdown.js';
 	import type { LatencyBreakdown, LatencyInfo } from '../audio/types.js';
 
@@ -203,6 +204,7 @@
 				});
 				bridge.start();
 				activeTransport = transport;
+				setGameTransport(transport);
 				transportConnected = true;
 
 				// Start RTT monitoring
@@ -493,7 +495,9 @@
 				roomState.update((s) => ({ ...s, vacateNotice: true }));
 				break;
 			case 'pong':
-				rttMonitor?.handlePong(msg as unknown as { id: number });
+				rttMonitor?.handlePong(
+					msg as unknown as { id: number; t?: number; server_t?: number }
+				);
 				break;
 			case 'error':
 				// The server reaps participants that take too long to bind
@@ -502,6 +506,12 @@
 				// error was ignored and the room sat in a zombie state.
 				if (msg.error === 'participant_not_found') {
 					rejoinAndRebind();
+				}
+				break;
+			default:
+				// Game traffic is handled outside this component
+				if (typeof msg.type === 'string' && msg.type.startsWith('game_')) {
+					dispatchGameMessage(msg as GameMessage);
 				}
 				break;
 		}
@@ -585,6 +595,7 @@
 		// synchronously, and re-entry must find no transport to act on
 		const transport = activeTransport;
 		activeTransport = null;
+		setGameTransport(null);
 		transport?.disconnect();
 		transportConnected = false;
 		codecMode = 'pcm';
@@ -656,6 +667,7 @@
 		capture?.stop();
 		playback?.stop();
 		activeTransport = null;
+		setGameTransport(null);
 		void closeAudioContext();
 		// The audio state store outlives this component (module-level).
 		// Without this reset, rejoining mounts a fresh Room that still
@@ -678,6 +690,7 @@
 		capture?.stop();
 		playback?.stop();
 		activeTransport = null;
+		setGameTransport(null);
 		// Release the mic and reset the module-level pipeline state on ANY
 		// unmount path (browser back, etc.) — a stale 'active' makes the
 		// next Room mount skip the Start-audio screen entirely

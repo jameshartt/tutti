@@ -1,9 +1,16 @@
 #include "session_binder.h"
 
+#include <chrono>
 #include <iostream>
 #include <nlohmann/json.hpp>
 
 namespace tutti {
+
+double server_time_ms() {
+    using namespace std::chrono;
+    return duration<double, std::milli>(
+               steady_clock::now().time_since_epoch()).count();
+}
 
 SessionBinder::SessionBinder(std::shared_ptr<RoomManager> room_manager)
     : room_manager_(std::move(room_manager)) {}
@@ -20,6 +27,10 @@ TransportCallbacks SessionBinder::make_callbacks() {
                             const uint8_t* data, size_t len) {
         on_datagram(session, data, len);
     };
+    cb.on_game_datagram = [this](TransportSession* session,
+                                 const uint8_t* data, size_t len) {
+        on_game_datagram(session, data, len);
+    };
     cb.on_session_close = [this](TransportSession* session) {
         on_session_close(session);
     };
@@ -35,63 +46,96 @@ void SessionBinder::on_session_open(std::shared_ptr<TransportSession> session) {
 
 void SessionBinder::on_message(TransportSession* session,
                                 const std::string& message) {
+    // Everything here is untrusted network input. Callers include C
+    // callbacks (msquic), so no exception may escape this function.
+    try {
+        handle_message(session, message);
+    } catch (const std::exception& e) {
+        std::cerr << "[SessionBinder] Dropped malformed message from "
+                  << session->id() << ": " << e.what() << "\n";
+    }
+}
+
+void SessionBinder::handle_message(TransportSession* session,
+                                   const std::string& message) {
     std::string sid = session->id();
 
-    // Check if this session is already bound — handle control messages
+    if (message.size() > kMaxControlMessageSize) {
+        std::cerr << "[SessionBinder] Dropped oversized message ("
+                  << message.size() << " bytes) from " << sid << "\n";
+        return;
+    }
+
+    // Check if this session is already bound — handle control messages.
+    // Copy the binding and release the lock before parsing or calling into
+    // the room: this mutex is also taken for every audio datagram, in every
+    // room, so nothing slow may run under it.
+    bool bound = false;
+    BoundSession binding;
     {
         std::lock_guard<std::mutex> lock(bindings_mutex_);
         auto it = bindings_.find(sid);
         if (it != bindings_.end()) {
-            nlohmann::json msg;
-            try {
-                msg = nlohmann::json::parse(message);
-            } catch (...) {
-                return;
-            }
-
-            auto type = msg.value("type", "");
-            if (type == "ping") {
-                msg["type"] = "pong";
-                it->second.session->send_reliable(msg.dump());
-            } else if (type == "gain") {
-                auto source_id = msg.value("participant_id", "");
-                float gain = msg.value("value", 1.0f);
-                if (!source_id.empty()) {
-                    auto room = room_manager_->get_room(it->second.room_name);
-                    if (room) {
-                        room->set_gain(it->second.participant_id, source_id, gain);
-                    }
-                }
-            } else if (type == "mute") {
-                auto source_id = msg.value("participant_id", "");
-                bool muted = msg.value("muted", false);
-                if (!source_id.empty()) {
-                    auto room = room_manager_->get_room(it->second.room_name);
-                    if (room) {
-                        room->set_mute(it->second.participant_id, source_id, muted);
-                    }
-                }
-            } else if (type == "codec") {
-                // Weak-link downgrade / recovery upgrade, chosen client-side
-                auto codec_name = msg.value("codec", "");
-                if (codec_name == "opus" || codec_name == "pcm") {
-                    auto room = room_manager_->get_room(it->second.room_name);
-                    if (room) {
-                        room->set_participant_codec(
-                            it->second.participant_id,
-                            codec_name == "opus" ? Codec::Opus : Codec::Pcm);
-                    }
-                }
-            } else if (type == "client_stats") {
-                // Client-side audio telemetry beacon (every ~10s). Logged so
-                // incidents are diagnosable from server logs after the fact.
-                msg.erase("type");
-                std::cout << "[ClientStats] room=" << it->second.room_name
-                          << " participant=" << it->second.participant_id
-                          << " " << msg.dump() << "\n";
-            }
-            return;
+            bound = true;
+            binding = it->second;
         }
+    }
+
+    if (bound) {
+        nlohmann::json msg = nlohmann::json::parse(message, nullptr, false);
+        if (!msg.is_object()) return;
+        auto type_it = msg.find("type");
+        if (type_it == msg.end() || !type_it->is_string()) return;
+        const std::string type = type_it->get<std::string>();
+
+        if (type == "ping") {
+            msg["type"] = "pong";
+            // Server monotonic clock in ms, for client clock-offset
+            // estimation (game tick sync)
+            msg["server_t"] = server_time_ms();
+            binding.session->send_reliable(msg.dump());
+        } else if (type.rfind("game_", 0) == 0) {
+            if (message.size() > kMaxGameMessageSize) return;
+            auto room = room_manager_->get_room(binding.room_name);
+            if (room) room->on_game_message(binding.participant_id, type, msg);
+        } else if (type == "gain") {
+            auto source_id = msg.value("participant_id", "");
+            float gain = msg.value("value", 1.0f);
+            if (!source_id.empty()) {
+                auto room = room_manager_->get_room(binding.room_name);
+                if (room) {
+                    room->set_gain(binding.participant_id, source_id, gain);
+                }
+            }
+        } else if (type == "mute") {
+            auto source_id = msg.value("participant_id", "");
+            bool muted = msg.value("muted", false);
+            if (!source_id.empty()) {
+                auto room = room_manager_->get_room(binding.room_name);
+                if (room) {
+                    room->set_mute(binding.participant_id, source_id, muted);
+                }
+            }
+        } else if (type == "codec") {
+            // Weak-link downgrade / recovery upgrade, chosen client-side
+            auto codec_name = msg.value("codec", "");
+            if (codec_name == "opus" || codec_name == "pcm") {
+                auto room = room_manager_->get_room(binding.room_name);
+                if (room) {
+                    room->set_participant_codec(
+                        binding.participant_id,
+                        codec_name == "opus" ? Codec::Opus : Codec::Pcm);
+                }
+            }
+        } else if (type == "client_stats") {
+            // Client-side audio telemetry beacon (every ~10s). Logged so
+            // incidents are diagnosable from server logs after the fact.
+            msg.erase("type");
+            std::cout << "[ClientStats] room=" << binding.room_name
+                      << " participant=" << binding.participant_id
+                      << " " << msg.dump() << "\n";
+        }
+        return;
     }
 
     // Not yet bound — this should be a bind message
@@ -103,6 +147,10 @@ void SessionBinder::on_message(TransportSession* session,
         return;
     }
 
+    if (!msg.is_object()) {
+        std::cerr << "[SessionBinder] Non-object message from " << sid << "\n";
+        return;
+    }
     std::string type = msg.value("type", "");
     if (type != "bind") {
         std::cerr << "[SessionBinder] Expected bind message, got: " << type
@@ -182,6 +230,26 @@ void SessionBinder::on_datagram(TransportSession* session,
     auto room = room_manager_->get_room(room_name);
     if (room) {
         room->on_audio_received(participant_id, data, len);
+    }
+}
+
+void SessionBinder::on_game_datagram(TransportSession* session,
+                                     const uint8_t* data, size_t len) {
+    std::string sid = session->id();
+
+    std::string room_name;
+    std::string participant_id;
+    {
+        std::lock_guard<std::mutex> lock(bindings_mutex_);
+        auto it = bindings_.find(sid);
+        if (it == bindings_.end()) return; // Not yet bound, drop datagram
+        room_name = it->second.room_name;
+        participant_id = it->second.participant_id;
+    }
+
+    auto room = room_manager_->get_room(room_name);
+    if (room) {
+        room->on_game_datagram(participant_id, data, len);
     }
 }
 

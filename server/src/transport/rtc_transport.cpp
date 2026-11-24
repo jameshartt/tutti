@@ -1,5 +1,7 @@
 #include "rtc_transport.h"
 
+#include "game_datagram.h"
+
 #include <iostream>
 #include <rtc/rtc.hpp>
 
@@ -29,6 +31,28 @@ bool RtcSession::send_datagram(const uint8_t* data, size_t len) {
     }
 }
 
+void RtcSession::set_game_channel(std::shared_ptr<rtc::DataChannel> game_dc) {
+    std::lock_guard<std::mutex> lock(game_dc_mutex_);
+    game_dc_ = std::move(game_dc);
+}
+
+bool RtcSession::send_game_datagram(const uint8_t* data, size_t len) {
+    if (!connected_ || len == 0 || len > kMaxGameDatagramSize) return false;
+    std::shared_ptr<rtc::DataChannel> dc;
+    {
+        std::lock_guard<std::mutex> lock(game_dc_mutex_);
+        dc = game_dc_;
+    }
+    if (!dc || !dc->isOpen()) return false;
+    try {
+        dc->send(reinterpret_cast<const std::byte*>(data), len);
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[RTC] send_game_datagram error: " << e.what() << "\n";
+        return false;
+    }
+}
+
 bool RtcSession::send_reliable(const std::string& message) {
     if (!connected_ || !control_dc_ || !control_dc_->isOpen()) return false;
     try {
@@ -44,6 +68,10 @@ void RtcSession::close() {
     connected_ = false;
     if (audio_dc_) audio_dc_->close();
     if (control_dc_) control_dc_->close();
+    {
+        std::lock_guard<std::mutex> lock(game_dc_mutex_);
+        if (game_dc_) game_dc_->close();
+    }
     if (pc_) pc_->close();
 }
 

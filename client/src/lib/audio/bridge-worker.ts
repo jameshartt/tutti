@@ -18,6 +18,7 @@
  */
 
 import { RingBufferReader } from './ring-buffer.js';
+import { audioSequence } from '../transport/game-datagram.js';
 import {
 	SAMPLES_PER_FRAME,
 	AUDIO_PACKET_SIZE,
@@ -31,6 +32,12 @@ let pointers: Int32Array | null = null;
 let running = false;
 let muted = false;
 let loopbackEnabled = false;
+// `self` is typed as Window here (no webworker lib in the app tsconfig);
+// this is the same object with the worker's postMessage signature.
+const workerSelf = self as unknown as {
+	postMessage(message: unknown, transfer: Transferable[]): void;
+};
+
 let sendSequence = 0;
 let sendTimestamp = 0;
 
@@ -59,21 +66,21 @@ function drainCapture(): void {
 
 		if (!muted) {
 			const packet: AudioPacket = {
-				sequence: sendSequence++,
+				sequence: audioSequence(sendSequence++),
 				timestamp: sendTimestamp,
 				samples: readBuffer
 			};
 			sendTimestamp += SAMPLES_PER_FRAME;
 
 			const data = serializeTransferable(packet);
-			self.postMessage({ type: 'packet', data }, [data]);
+			workerSelf.postMessage({ type: 'packet', data }, [data]);
 		} else {
 			sendTimestamp += SAMPLES_PER_FRAME;
 		}
 
 		if (loopbackEnabled) {
 			const copy = readBuffer.buffer.slice(0);
-			self.postMessage({ type: 'loopback', samples: copy }, [copy]);
+			workerSelf.postMessage({ type: 'loopback', samples: copy }, [copy]);
 		}
 	}
 }

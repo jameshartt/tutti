@@ -4,6 +4,7 @@
  * Implemented by WebTransport (primary) and WebRTC DataChannel (Safari fallback).
  * Both provide:
  * - Unreliable datagrams for audio packets
+ * - Unreliable datagrams for game traffic, kept apart from audio
  * - Reliable channel for control messages (JSON)
  */
 
@@ -26,11 +27,27 @@ export interface Transport {
 	/** Send an unreliable audio datagram */
 	sendDatagram(data: Uint8Array): void;
 
+	/**
+	 * Send an unreliable game datagram: [kind u8][payload...]. The transport
+	 * adds whatever framing it needs to keep it apart from audio. Dropped
+	 * silently if game datagrams are not ready.
+	 */
+	sendGameDatagram(data: Uint8Array): void;
+
+	/** True when game datagrams can be sent */
+	readonly gameDatagramsReady: boolean;
+
 	/** Send a reliable control message */
 	sendReliable(message: string): void;
 
 	/** Register callback for incoming datagrams */
 	onDatagram(callback: DatagramCallback): void;
+
+	/**
+	 * Register callback for incoming game datagrams ([kind u8][payload...],
+	 * transport framing already removed). Never called for audio.
+	 */
+	onGameDatagram(callback: DatagramCallback): void;
 
 	/** Register callback for incoming reliable messages */
 	onMessage(callback: MessageCallback): void;

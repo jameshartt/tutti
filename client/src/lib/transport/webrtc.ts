@@ -15,6 +15,7 @@ import type {
 	StateCallback
 } from './transport.js';
 import { summarizeCandidate } from './diagnostics.js';
+import { MAX_GAME_DATAGRAM_SIZE } from './game-datagram.js';
 
 /** Connection-attempt trace for the diagnostics beacon */
 export interface RtcDiagnostics {
@@ -30,8 +31,10 @@ export class WebRTCTransport implements Transport {
 	private pc: RTCPeerConnection | null = null;
 	private audioDC: RTCDataChannel | null = null;
 	private controlDC: RTCDataChannel | null = null;
+	private gameDC: RTCDataChannel | null = null;
 	private signalingWs: WebSocket | null = null;
 	private datagramCallbacks: DatagramCallback[] = [];
+	private gameDatagramCallbacks: DatagramCallback[] = [];
 	private messageCallbacks: MessageCallback[] = [];
 	private stateCallbacks: StateCallback[] = [];
 	private _state: TransportState = 'disconnected';
@@ -92,6 +95,23 @@ export class WebRTCTransport implements Transport {
 				this.audioDC.onmessage = (event) => {
 					const data = new Uint8Array(event.data);
 					for (const cb of this.datagramCallbacks) {
+						cb(data);
+					}
+				};
+
+				// Create game data channel (unreliable, unordered). Optional:
+				// connect() does not wait for it, so joining audio is never
+				// held up by it; game datagrams are simply not ready until
+				// it opens.
+				this.gameDC = this.pc.createDataChannel('game', {
+					ordered: false,
+					maxRetransmits: 0
+				});
+				this.gameDC.binaryType = 'arraybuffer';
+
+				this.gameDC.onmessage = (event) => {
+					const data = new Uint8Array(event.data);
+					for (const cb of this.gameDatagramCallbacks) {
 						cb(data);
 					}
 				};
@@ -162,10 +182,12 @@ export class WebRTCTransport implements Transport {
 	disconnect(): void {
 		this.audioDC?.close();
 		this.controlDC?.close();
+		this.gameDC?.close();
 		this.pc?.close();
 		this.signalingWs?.close();
 		this.audioDC = null;
 		this.controlDC = null;
+		this.gameDC = null;
 		this.pc = null;
 		this.signalingWs = null;
 		this.setState('disconnected');
@@ -173,7 +195,23 @@ export class WebRTCTransport implements Transport {
 
 	sendDatagram(data: Uint8Array): void {
 		if (!this.audioDC || this.audioDC.readyState !== 'open') return;
-		this.audioDC.send(data);
+		// Type-only cast: DOM typings want an ArrayBuffer-backed view
+		this.audioDC.send(data as Uint8Array<ArrayBuffer>);
+	}
+
+	get gameDatagramsReady(): boolean {
+		return this.gameDC?.readyState === 'open';
+	}
+
+	sendGameDatagram(data: Uint8Array): void {
+		if (!this.gameDC || this.gameDC.readyState !== 'open') return;
+		if (data.byteLength === 0 || data.byteLength > MAX_GAME_DATAGRAM_SIZE) return;
+		// Same cast as audio: DOM typings want an ArrayBuffer-backed view
+		this.gameDC.send(data as Uint8Array<ArrayBuffer>);
+	}
+
+	onGameDatagram(callback: DatagramCallback): void {
+		this.gameDatagramCallbacks.push(callback);
 	}
 
 	sendReliable(message: string): void {

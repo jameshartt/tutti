@@ -23,6 +23,7 @@ import {
 	type AudioPacket
 } from './types.js';
 import type { Transport } from '../transport/transport.js';
+import { audioSequence } from '../transport/game-datagram.js';
 import { OpusEncoderPipe, OpusDecoderPipe } from './opus.js';
 
 const OPUS_MAX_PAYLOAD = 240;
@@ -217,7 +218,7 @@ export class TransportBridge {
 					this.sendSequence++;
 				} else {
 					const packet: AudioPacket = {
-						sequence: this.sendSequence++,
+						sequence: audioSequence(this.sendSequence++),
 						timestamp: this.sendTimestamp,
 						samples: this.readBuffer
 					};

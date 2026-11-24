@@ -12,6 +12,8 @@
  * Demux is stateless and per-packet, so codec switches can't garble audio.
  */
 
+import { audioSequence } from '../transport/game-datagram.js';
+
 const OPUS_MAX_PAYLOAD = 240;
 
 export async function opusSupported(): Promise<boolean> {
@@ -49,7 +51,7 @@ export class OpusEncoderPipe {
 				if (chunk.byteLength > OPUS_MAX_PAYLOAD) return; // keep demux unambiguous
 				const pkt = new Uint8Array(8 + chunk.byteLength);
 				const dv = new DataView(pkt.buffer);
-				dv.setUint32(0, this.seq++, true);
+				dv.setUint32(0, audioSequence(this.seq++), true);
 				dv.setUint32(4, this.wireTimestamp, true);
 				// chunk.duration is µs; convert to samples at 48kHz
 				this.wireTimestamp += Math.round(((chunk.duration ?? 10000) * 48) / 1000);

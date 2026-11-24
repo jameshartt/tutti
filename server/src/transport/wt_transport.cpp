@@ -2,9 +2,9 @@
 
 #include <cstring>
 #include <iostream>
-#include <sstream>
 #include <unistd.h>
 
+#include "game_datagram.h"
 #include "util/secure_random.h"
 
 namespace tutti {
@@ -73,6 +73,14 @@ bool WtSession::send_datagram(const uint8_t* data, size_t len) {
     (void)len;
     return false;
 #endif
+}
+
+bool WtSession::send_game_datagram(const uint8_t* data, size_t len) {
+    if (len == 0 || len > kMaxGameDatagramSize) return false;
+    uint8_t framed[kGameMagicSize + kMaxGameDatagramSize];
+    std::memcpy(framed, kGameMagic, kGameMagicSize);
+    std::memcpy(framed + kGameMagicSize, data, len);
+    return send_datagram(framed, kGameMagicSize + len);
 }
 
 bool WtSession::send_reliable(const std::string& message) {
@@ -213,11 +221,18 @@ void WtTransportServer::on_session_event(const wtf_session_event_t* event) {
             auto session = server->find_session(event->session);
             if (!session) break;
 
-            if (server->callbacks_.on_datagram) {
-                server->callbacks_.on_datagram(
-                    session.get(),
-                    event->datagram_received.data,
-                    event->datagram_received.length);
+            const uint8_t* dg = event->datagram_received.data;
+            size_t dg_len = event->datagram_received.length;
+            if (is_game_datagram(dg, dg_len)) {
+                // Game traffic: strip the magic, never reaches the audio path
+                size_t body = dg_len - kGameMagicSize;
+                if (body <= kMaxGameDatagramSize &&
+                    server->callbacks_.on_game_datagram) {
+                    server->callbacks_.on_game_datagram(
+                        session.get(), dg + kGameMagicSize, body);
+                }
+            } else if (server->callbacks_.on_datagram) {
+                server->callbacks_.on_datagram(session.get(), dg, dg_len);
             }
             break;
         }
@@ -267,15 +282,6 @@ void WtTransportServer::on_stream_event(const wtf_stream_event_t* event) {
 
     switch (event->type) {
         case WTF_STREAM_EVENT_DATA_RECEIVED: {
-            // Reconstruct the message from buffers
-            std::string data;
-            for (uint32_t i = 0; i < event->data_received.buffer_count; i++) {
-                data.append(
-                    reinterpret_cast<const char*>(
-                        event->data_received.buffers[i].data),
-                    event->data_received.buffers[i].length);
-            }
-
             // Find which session owns this stream
             // The stream is the control stream for one of our sessions
             std::shared_ptr<WtSession> session;
@@ -290,14 +296,17 @@ void WtTransportServer::on_stream_event(const wtf_stream_event_t* event) {
             }
 
             if (session && server->callbacks_.on_message) {
-                // Split on newlines (our message delimiter)
-                // Buffer partial messages per-session if needed
-                std::istringstream iss(data);
-                std::string line;
-                while (std::getline(iss, line)) {
-                    if (!line.empty()) {
-                        server->callbacks_.on_message(session.get(), line);
-                    }
+                // Newline-delimited messages. A message can be split across
+                // receive events (and across buffers within one), so the
+                // session's framer holds any partial line until it completes.
+                auto deliver = [&](const std::string& line) {
+                    server->callbacks_.on_message(session.get(), line);
+                };
+                for (uint32_t i = 0; i < event->data_received.buffer_count; i++) {
+                    session->control_framer().feed(
+                        reinterpret_cast<const char*>(
+                            event->data_received.buffers[i].data),
+                        event->data_received.buffers[i].length, deliver);
                 }
             }
             break;

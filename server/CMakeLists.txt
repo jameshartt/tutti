@@ -9,6 +9,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(TUTTI_BUILD_TESTS "Build unit tests" ON)
 option(TUTTI_ENABLE_WEBTRANSPORT "Build with WebTransport support (msquic + libwtf)" OFF)
 
+set(TUTTI_SANITIZE "" CACHE STRING
+    "Sanitizers for our own code and tests, e.g. 'address,undefined' or 'thread'")
+
 # ── Dependencies ─────────────────────────────────────────────────────────────
 include(cmake/FetchDependencies.cmake)
 
@@ -21,6 +24,10 @@ add_library(tutti-core STATIC
     src/transport/rtc_transport.h
     src/transport/session_binder.cpp
     src/transport/session_binder.h
+    src/transport/game_datagram.h
+    src/transport/line_framer.h
+    src/game/game_session.cpp
+    src/game/game_session.h
     src/audio/codec.cpp
     src/audio/codec.h
     src/audio/mixer.cpp
@@ -51,6 +58,14 @@ target_link_libraries(tutti-core PUBLIC
     pthread
 )
 
+# Sanitizers apply to tutti-core and everything that links it (PUBLIC), not
+# to the third-party dependencies.
+if(TUTTI_SANITIZE)
+    target_compile_options(tutti-core PUBLIC
+        -fsanitize=${TUTTI_SANITIZE} -fno-omit-frame-pointer -fno-sanitize-recover=all)
+    target_link_options(tutti-core PUBLIC -fsanitize=${TUTTI_SANITIZE})
+endif()
+
 # ── WebTransport support (optional) ─────────────────────────────────────────
 if(TUTTI_ENABLE_WEBTRANSPORT)
     target_compile_definitions(tutti-core PUBLIC TUTTI_WEBTRANSPORT)
@@ -68,6 +83,8 @@ if(TUTTI_BUILD_TESTS)
         tests/mixer_test.cpp
         tests/lobby_loop_test.cpp
         tests/codec_test.cpp
+        tests/transport_framing_test.cpp
+        tests/game_routing_test.cpp
     )
     target_link_libraries(tutti-tests PRIVATE
         tutti-core

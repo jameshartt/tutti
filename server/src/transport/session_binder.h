@@ -10,6 +10,15 @@
 
 namespace tutti {
 
+/// Largest reliable message accepted from a client. Legitimate control
+/// messages are a few hundred bytes.
+constexpr size_t kMaxControlMessageSize = 64 * 1024;
+/// Largest `game_*` message accepted. These can be relayed to a whole room.
+constexpr size_t kMaxGameMessageSize = 16 * 1024;
+
+/// Server monotonic time in milliseconds (the `server_t` in `pong`).
+double server_time_ms();
+
 /// Transport-agnostic session binder.
 ///
 /// When a new transport session opens (WebTransport or WebRTC), SessionBinder:
@@ -30,11 +39,18 @@ private:
     /// Called when a new transport session opens (either WebTransport or WebRTC)
     void on_session_open(std::shared_ptr<TransportSession> session);
 
-    /// Called when a reliable message arrives from a session
+    /// Called when a reliable message arrives from a session. Never throws.
     void on_message(TransportSession* session, const std::string& message);
+
+    /// on_message body; may throw on malformed input (caught by on_message)
+    void handle_message(TransportSession* session, const std::string& message);
 
     /// Called when a datagram arrives from a session
     void on_datagram(TransportSession* session, const uint8_t* data, size_t len);
+
+    /// Called when a game datagram arrives from a session
+    void on_game_datagram(TransportSession* session,
+                          const uint8_t* data, size_t len);
 
     /// Called when a session closes
     void on_session_close(TransportSession* session);

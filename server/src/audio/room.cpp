@@ -1,5 +1,7 @@
 #include "room.h"
 
+#include "transport/game_datagram.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -43,7 +45,14 @@ void Room::set_lobby_loop_samples(std::vector<int16_t> samples) {
 Room::Room(const std::string& name, size_t max_participants)
     : name_(name),
       max_participants_(max_participants),
-      mixer_(max_participants) {
+      mixer_(max_participants),
+      game_(name,
+            GameSession::Outbound{
+                [this](const std::string& msg) { broadcast_control(msg); },
+                [this](const std::string& pid, const uint8_t* data,
+                       size_t len) {
+                    return send_game_datagram(pid, data, len);
+                }}) {
 #ifdef __linux__
     notify_fd_ = eventfd(0, EFD_NONBLOCK);
     if (notify_fd_ < 0) {
@@ -253,7 +262,7 @@ void Room::on_audio_received(const std::string& participant_id,
                     p.codec == Codec::Pcm) {
                     target_id = pid;
                     target_session = p.session;
-                    output_seq = p.output_sequence++;
+                    output_seq = next_audio_sequence(p.output_sequence);
                     p.last_audio_sent_ns = now_ns();
                     use_fast_path = true;
                     break;
@@ -313,6 +322,37 @@ void Room::on_audio_received(const std::string& participant_id,
         (void)::write(notify_fd_, &val, sizeof(val));
 #endif
     }
+}
+
+void Room::on_game_datagram(const std::string& participant_id,
+                            const uint8_t* data, size_t len) {
+    if (len == 0 || len > kMaxGameDatagramSize) return;
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        auto it = participants_.find(participant_id);
+        if (it == participants_.end()) return;
+        it->second.last_game_received_ns = now_ns();
+    }
+    game_.on_datagram(participant_id, data, len);
+}
+
+void Room::on_game_message(const std::string& participant_id,
+                           const std::string& type,
+                           const nlohmann::json& msg) {
+    game_.on_message(participant_id, type, msg);
+}
+
+bool Room::send_game_datagram(const std::string& participant_id,
+                              const uint8_t* data, size_t len) {
+    std::shared_ptr<TransportSession> session;
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        auto it = participants_.find(participant_id);
+        if (it == participants_.end()) return false;
+        session = it->second.session;
+    }
+    // Send outside the lock: network I/O must not block the mixer thread
+    return session && session->send_game_datagram(data, len);
 }
 
 void Room::set_participant_codec(const std::string& id, Codec codec) {
@@ -382,18 +422,24 @@ std::vector<Room::ParticipantInfo> Room::get_participants() const {
 }
 
 void Room::broadcast_control(const std::string& msg) {
-    std::lock_guard<std::mutex> lock(participants_mutex_);
-    for (auto& [pid, p] : participants_) {
-        if (p.session) p.session->send_reliable(msg);
+    // Collect under the lock, send outside it: network I/O must never hold
+    // the mutex the mixer thread and the audio receive path need.
+    std::vector<std::shared_ptr<TransportSession>> sessions;
+    {
+        std::lock_guard<std::mutex> lock(participants_mutex_);
+        sessions.reserve(participants_.size());
+        for (auto& [pid, p] : participants_) {
+            if (p.session) sessions.push_back(p.session);
+        }
     }
+    for (auto& s : sessions) s->send_reliable(msg);
 }
 
-size_t Room::reap_stale_participants() {
+size_t Room::reap_stale_participants(std::chrono::nanoseconds inactivity) {
     std::vector<std::string> to_reap;
     auto now = std::chrono::steady_clock::now();
     auto now_nanos = now_ns();
-    auto inactivity_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(kInactivityTimeout).count();
+    auto inactivity_ns = inactivity.count();
     auto unbound_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(kUnboundTimeout).count();
 
@@ -416,12 +462,15 @@ size_t Room::reap_stale_participants() {
             // Check audio inactivity (both directions)
             int64_t last_recv = p.last_audio_received_ns;
             int64_t last_sent = p.last_audio_sent_ns;
-            int64_t last_activity = std::max(last_recv, last_sent);
+            // Game datagrams count too: a room of muted racers sends no
+            // audio in either direction but is very much alive
+            int64_t last_activity = std::max(
+                {last_recv, last_sent, p.last_game_received_ns});
 
             if (last_activity == 0) {
                 // Never had audio — fall back to join_time
                 auto elapsed = now - p.join_time;
-                if (elapsed >= kInactivityTimeout)
+                if (elapsed >= inactivity)
                     to_reap.push_back(id);
             } else {
                 if ((now_nanos - last_activity) >= inactivity_ns)
@@ -722,7 +771,7 @@ void Room::service_lobby_loop(std::chrono::steady_clock::time_point now) {
 void Room::queue_frame_locked(Participant& p, const int16_t* samples) {
     if (p.codec == Codec::Pcm || !p.codec_state) {
         AudioPacket pkt;
-        pkt.sequence = p.output_sequence++;
+        pkt.sequence = next_audio_sequence(p.output_sequence);
         pkt.timestamp = 0;
         std::memcpy(pkt.samples, samples, kAudioPayloadSize);
         PendingSend ps;
@@ -748,7 +797,7 @@ void Room::queue_frame_locked(Participant& p, const int16_t* samples) {
         if (n <= 0) continue;
         PendingSend ps;
         ps.session = p.session;
-        uint32_t seq = p.output_sequence++;
+        uint32_t seq = next_audio_sequence(p.output_sequence);
         std::memcpy(ps.buf, &seq, sizeof(seq));
         std::memcpy(ps.buf + 4, &ts, sizeof(ts));
         std::memcpy(ps.buf + kAudioHeaderSize, payload, n);
