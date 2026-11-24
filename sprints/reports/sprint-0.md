@@ -1,7 +1,7 @@
 # Sprint 0 report
 
-**Status:** built and verified locally; not yet committed, pushed or run in CI.
-**Branch:** `racer/sprint-0` (uncommitted working tree).
+**Status:** pull request #1 open; all five CI checks green on the first run.
+**Branch:** `racer/sprint-0`.
 
 ## Work items
 
@@ -15,11 +15,11 @@
 | 0.6 Client test tooling | Done | Vitest: 16 tests pass. Playwright: Chromium, Firefox and WebKit pass. |
 | 0.7 Server tests for binder and demux | Done | 24 new tests in `game_routing_test.cpp` and `transport_framing_test.cpp`. |
 | 0.8 Protocol document | Done | `shared/protocol.md` now describes game datagrams, the `game` channel, `game_*` messages and `server_t`; unimplemented `session_token` and `server_timing` removed. |
-| 0.9 CI pull-request pipeline | Written, never run | `.github/workflows/ci.yml`. Needs a push. |
-| 0.10 CI container build | Written, never run | Same workflow, `images` job. The same build and test were run by hand locally and pass. |
+| 0.9 CI pull-request pipeline | Done, except the deliberate-failure check | `.github/workflows/ci.yml`: server, sanitizers, client and end to end in Chromium, Firefox and WebKit all green on pull request #1. A deliberately broken test has not been tried. |
+| 0.10 CI container build | Done | `images` job green in 9m38s on a cold cache, including the WebTransport end-to-end test. |
 | 0.11 Branch protection | Open | Manual step M1, after the first CI run. |
 | Q.1 Reviewer and verifier agents | Done | `.claude/agents/racer-reviewer.md`, `racer-verifier.md`. The reviewer was used on this sprint. |
-| Q.2 Review in CI | Not started | Blocked on manual step M2 (API key secret). |
+| Q.2 Review in CI | Written, first run pending | `.github/workflows/review.yml`. M2 is done. |
 | Q.3 Sanitizers and fuzzing | Half done | ASan + UBSan build option and CI job; all 39 tests pass under them. Fuzz targets and a thread-sanitizer job are not written yet. |
 | Q.9 Device self-test page | First version done | `/dev/selftest`; used by the end-to-end tests. |
 | Q.10 Sprint report generator | Not started | This report was written by hand. |
@@ -59,7 +59,6 @@ The fixes were re-tested but not re-reviewed by a second fresh agent.
 
 ## Not done or not verified
 
-- Nothing is committed or pushed, so CI has never run.
 - WebKit is covered by Playwright's WebKit build on Linux only; real Safari on an iPhone is manual step M3.
 - No two-person voice session was run with the new build; audio is covered only by the 15 existing tests and the demux tests.
 - Fuzz targets, thread sanitizer, rate limiting of game messages, the report generator, and review in CI.
@@ -68,4 +67,3 @@ The fixes were re-tested but not re-reviewed by a second fresh agent.
 ## Open manual steps
 
 - **M1** Approve branch protection (after the first green CI run).
-- **M2** Add the API key secret for review in CI.
