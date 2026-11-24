@@ -52,6 +52,9 @@ struct Harness {
     Harness() {
         manager->initialize_default_rooms();
         binder = std::make_unique<tutti::SessionBinder>(manager);
+        // No rate limit: the fuzzer sends tens of thousands of messages a
+        // second and every one should reach the handlers
+        binder->set_game_message_limit(1e12, 1e12);
         cb = binder->make_callbacks();
         std::string room = manager->list_rooms().front().name;
         std::string pid;

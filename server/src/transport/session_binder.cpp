@@ -208,7 +208,10 @@ void SessionBinder::handle_message(TransportSession* session,
     // Store binding
     {
         std::lock_guard<std::mutex> lock(bindings_mutex_);
-        bindings_[sid] = {room_name, participant_id, owned_session};
+        BoundSession binding{room_name, participant_id, owned_session};
+        binding.game_limit = std::make_shared<TokenBucket>(
+            game_message_rate_, game_message_burst_);
+        bindings_[sid] = std::move(binding);
     }
 
     std::cout << "[SessionBinder] Bound session " << sid

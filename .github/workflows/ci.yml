@@ -152,11 +152,25 @@ jobs:
         run: |
           for target in fuzz_line_framer fuzz_datagram_demux fuzz_control_message; do
             echo "::group::$target"
+            # First directory is libFuzzer's working corpus; the second holds
+            # the checked-in seeds, so every run starts from valid messages
             mkdir -p "corpus/$target"
-            "server/build-fuzz/$target" "corpus/$target" \
+            dict=""
+            if [ "$target" = fuzz_control_message ]; then
+              dict="-dict=server/fuzz/control_message.dict"
+            fi
+            "server/build-fuzz/$target" "corpus/$target" "server/fuzz/corpus/$target" $dict \
               -max_total_time=60 -max_len=20000 -timeout=10 \
               -artifact_prefix="fuzz-artifacts-$target-" -print_final_stats=1
             echo "::endgroup::"
+          done
+
+          # The control-message fuzzer is only useful if it reaches the
+          # handlers: require that it kept inputs with recognised types
+          for word in game_ping gain mute codec client_stats; do
+            if ! grep -rqa "\"$word\"" corpus/fuzz_control_message; then
+              echo "::error::fuzz_control_message found no new inputs with a \"$word\" message"; exit 1
+            fi
           done
 
       - name: Upload crashing inputs
