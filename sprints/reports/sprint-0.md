@@ -17,10 +17,10 @@
 | 0.8 Protocol document | Done | `shared/protocol.md` now describes game datagrams, the `game` channel, `game_*` messages and `server_t`; unimplemented `session_token` and `server_timing` removed. |
 | 0.9 CI pull-request pipeline | Done | `.github/workflows/ci.yml`. Three throwaway pull requests each broke one test: a server test turned only the two server checks red, a client unit test only the client check, an end-to-end test only the end-to-end check (#2, #3, #4, closed unmerged). |
 | 0.10 CI container build | Done | `images` job green in 9m38s on a cold cache, including the WebTransport end-to-end test. |
-| 0.11 Branch protection | Done | `main` requires the five build and test checks. Pull request #2, with a failing check, showed as blocked from merging. Not enforced for the repository owner. |
+| 0.11 Branch protection | Done | `main` requires the build and test checks (five at first, seven since the thread-sanitizer and fuzz jobs were added). Pull request #2, with a failing check, showed as blocked from merging. Not enforced for the repository owner. |
 | Q.1 Reviewer and verifier agents | Done | `.claude/agents/racer-reviewer.md`, `racer-verifier.md`. The reviewer was used on this sprint. |
 | Q.2 Review in CI | Done | `.github/workflows/review.yml` posts a review and an acceptance check on each pull request. It uses a Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`); API keys were refused for billing reasons that were never explained. |
-| Q.3 Sanitizers and fuzzing | Done, pending first CI run of the new jobs | ASan + UBSan and thread-sanitizer jobs; fuzz targets for the control-stream framer, the datagram demux and control message handling, 60 seconds each per pull request. Locally the tests pass under the thread sanitizer with no reports. Fuzzing found that the framer's size limit depended on how bytes were split; fixed. |
+| Q.3 Sanitizers and fuzzing | Done | ASan + UBSan and thread-sanitizer jobs; fuzz targets for the control-stream framer, the datagram demux and control message handling, 60 seconds each per pull request. Locally the tests pass under the thread sanitizer with no reports. Fuzzing found that the framer's size limit depended on how bytes were split; fixed. |
 | Q.9 Device self-test page | First version done | `/dev/selftest`; used by the end-to-end tests. |
 | Q.10 Sprint report generator | Not started | This report was written by hand. |
 

@@ -17,7 +17,7 @@ Where a step is only an approval, Claude can do the work once you say yes.
 ## Sprint 0
 
 ### M1 Approve branch protection (item 0.11) — done
-- `main` requires the five build and test checks to pass before a pull request can merge. Force pushes and deletion are blocked.
+- `main` requires the seven build and test checks to pass before a pull request can merge. Force pushes and deletion are blocked. The rules live in two repository rulesets, `main-1` and `main-2`.
 - As the repository owner you can still bypass this. Say "enforce for admins too" to remove that.
 
 ### M2 Connect Claude to the repository for automated review (item Q.2) — done
@@ -34,12 +34,14 @@ Where a step is only an approval, Claude can do the work once you say yes.
 
 ## Sprint 1
 
-### M3 iPhone self-test (item 1.4)
-- **Time:** 3 minutes.
+### M3 iPhone physics test (item 1.4)
+- **When:** after the sprint 1 pull request is merged and deployed.
+- **Time:** 2 minutes.
 - **Do:**
-  1. On your iPhone, open Safari and go to the link Claude gives you.
-  2. Tap **Start** and wait for the result.
-  3. Send Claude the result code shown on screen.
+  1. On your iPhone, open Safari and go to `https://tutti.rocks/dev/physics`.
+  2. Tap **Start** and wait about ten seconds for PASS or FAIL.
+  3. Tell Claude it is done. The result is logged on the server, so there is nothing to copy; the code under the verdict (for example `PASS-SAME-1.20ms`) is there if you want to read it out.
+- **Check:** `SAME` means the phone computed exactly what the server does; the time is the cost of one rollback, which must be under 4 ms.
 
 ### M4 Go or no-go on rollback (item 1.5)
 - **Time:** 5 minutes.

@@ -39,7 +39,12 @@ services:
     restart: unless-stopped
 
   client:
-    build: ./client
+    build:
+      context: ./client
+      # The client image compiles the game physics to WebAssembly from the
+      # same C++ the server uses
+      additional_contexts:
+        game: ./server/game
     expose:
       - "3000"
     environment:
