@@ -30,3 +30,8 @@ server/build-san/
 server/assets/lobby-loop.wav
 server/build-tsan/
 server/build-fuzz/
+
+# Game physics WebAssembly, built by scripts/build-game-wasm.sh
+client/static/game/
+server/game/build/
+server/game/build-wasm/

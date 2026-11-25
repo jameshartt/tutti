@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ── Options ──────────────────────────────────────────────────────────────────
 option(TUTTI_BUILD_TESTS "Build unit tests" ON)
 option(TUTTI_BUILD_FUZZERS "Build fuzz targets (libFuzzer with Clang, a random-input smoke driver otherwise)" OFF)
+option(TUTTI_BUILD_GAME "Build the racer physics library (server/game, fetches Jolt Physics)" OFF)
 option(TUTTI_ENABLE_WEBTRANSPORT "Build with WebTransport support (msquic + libwtf)" OFF)
 
 set(TUTTI_SANITIZE "" CACHE STRING
@@ -95,6 +96,13 @@ if(TUTTI_BUILD_TESTS)
     )
     include(GoogleTest)
     gtest_discover_tests(tutti-tests)
+endif()
+
+# ── Racer physics ────────────────────────────────────────────────────────────
+# Off by default until the server links it (sprint 2): it also builds on its
+# own from server/game, which is how CI and the WebAssembly build use it.
+if(TUTTI_BUILD_GAME)
+    add_subdirectory(game)
 endif()
 
 # ── Fuzz targets ─────────────────────────────────────────────────────────────

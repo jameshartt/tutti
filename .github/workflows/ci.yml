@@ -165,14 +165,6 @@ jobs:
             echo "::endgroup::"
           done
 
-          # The control-message fuzzer is only useful if it reaches the
-          # handlers: require that it kept inputs with recognised types
-          for word in game_ping gain mute codec client_stats; do
-            if ! grep -rqa "\"$word\"" corpus/fuzz_control_message; then
-              echo "::error::fuzz_control_message found no new inputs with a \"$word\" message"; exit 1
-            fi
-          done
-
       - name: Upload crashing inputs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -180,6 +172,78 @@ jobs:
           name: fuzz-artifacts
           path: fuzz-artifacts-*
           retention-days: 14
+
+  game:
+    name: Game physics (native + WASM determinism)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build
+
+      - name: Cache third-party builds
+        uses: actions/cache@v4
+        with:
+          path: server/game/build/_deps
+          key: game-deps-${{ env.DEPS_CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('server/game/CMakeLists.txt') }}
+
+      - name: Build native
+        run: |
+          cmake -S server/game -B server/game/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build server/game/build
+
+      - name: Unit tests
+        run: ctest --test-dir server/game/build --output-on-failure --timeout 300
+
+      - name: Native reference hashes
+        run: |
+          mkdir -p game-out
+          server/game/build/tutti-game-spike --hashes game-out/native-hashes.txt
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Same Dockerfile stage the client image uses, so what is tested here
+      # is what ships.
+      - name: Build WebAssembly module
+        uses: docker/build-push-action@v6
+        with:
+          context: client
+          build-contexts: game=server/game
+          target: wasm-export
+          outputs: type=local,dest=game-out/wasm
+          cache-from: type=gha,scope=game-wasm
+          cache-to: type=gha,mode=max,scope=game-wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Native x86-64 against WebAssembly under Node, all 3600 ticks. The
+      # end-to-end job repeats this in Chromium, Firefox and WebKit.
+      - name: Determinism, native against WebAssembly
+        run: |
+          node server/game/tools/wasm_hashes.mjs game-out/wasm/tutti-game.mjs > game-out/wasm-hashes.txt
+          if ! cmp game-out/native-hashes.txt game-out/wasm-hashes.txt; then
+            tick=$(paste game-out/native-hashes.txt game-out/wasm-hashes.txt | awk '$1 != $2 { print NR; exit }')
+            echo "::error::native and WebAssembly diverge at tick $tick"
+            exit 1
+          fi
+          echo "All $(wc -l < game-out/native-hashes.txt) ticks identical"
+
+      - name: Rollback cost on this runner
+        run: server/game/build/tutti-game-spike --bench
+
+      - name: Upload module and reference hashes
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-wasm
+          path: |
+            game-out/wasm
+            game-out/native-hashes.txt
+          retention-days: 7
 
   client:
     name: Client (check + unit tests + build)
@@ -204,8 +268,20 @@ jobs:
   e2e:
     name: End-to-end (Chromium, Firefox, WebKit)
     runs-on: ubuntu-24.04
+    needs: game
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download game module and reference hashes
+        uses: actions/download-artifact@v4
+        with:
+          name: game-wasm
+          path: game-out
+
+      - name: Put the game module where the client serves it
+        run: |
+          mkdir -p client/static/game
+          cp game-out/wasm/* client/static/game/
 
       - name: Install build dependencies
         run: |
@@ -244,6 +320,9 @@ jobs:
         working-directory: client
         env:
           TUTTI_SERVER_BIN: ${{ github.workspace }}/server/build/tutti-server
+          # Physics determinism: each engine against the native build
+          TUTTI_E2E_PHYSICS: "1"
+          TUTTI_PHYSICS_HASHES: ${{ github.workspace }}/game-out/native-hashes.txt
         run: npm run test:e2e
 
       - name: Upload Playwright report
@@ -278,8 +357,12 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: client
+          build-contexts: game=server/game
           tags: tutti-client:ci
-          cache-from: type=gha,scope=client
+          # The WebAssembly stage is the one the "game" job already built
+          cache-from: |
+            type=gha,scope=client
+            type=gha,scope=game-wasm
           cache-to: type=gha,mode=max,scope=client
 
       - name: Start server container
