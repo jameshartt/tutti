@@ -79,6 +79,108 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir server/build-san --output-on-failure --timeout 300
 
+  server-tsan:
+    name: Server (TSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libssl-dev pkg-config
+
+      - name: Cache third-party builds
+        uses: actions/cache@v4
+        with:
+          path: server/build-tsan/_deps
+          key: server-deps-tsan-${{ env.DEPS_CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('server/cmake/FetchDependencies.cmake') }}
+
+      - name: Configure
+        run: >
+          cmake -S server -B server/build-tsan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DTUTTI_SANITIZE=thread
+
+      - name: Build
+        run: cmake --build server/build-tsan --target tutti-tests
+
+      - name: Unit tests under the thread sanitizer
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir server/build-tsan --output-on-failure --timeout 600
+
+  server-fuzz:
+    name: Server (fuzz, 60 s per target)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build libssl-dev pkg-config
+
+      - name: Cache third-party builds
+        uses: actions/cache@v4
+        with:
+          path: server/build-fuzz/_deps
+          key: server-deps-fuzz-${{ env.DEPS_CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('server/cmake/FetchDependencies.cmake') }}
+
+      - name: Configure
+        run: >
+          cmake -S server -B server/build-fuzz -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DTUTTI_BUILD_TESTS=OFF
+          -DTUTTI_BUILD_FUZZERS=ON
+          -DTUTTI_SANITIZE=address,undefined
+
+      - name: Build
+        run: >
+          cmake --build server/build-fuzz
+          --target fuzz_line_framer fuzz_datagram_demux fuzz_control_message
+
+      - name: Fuzz
+        env:
+          ASAN_OPTIONS: abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          for target in fuzz_line_framer fuzz_datagram_demux fuzz_control_message; do
+            echo "::group::$target"
+            # First directory is libFuzzer's working corpus; the second holds
+            # the checked-in seeds, so every run starts from valid messages
+            mkdir -p "corpus/$target"
+            dict=""
+            if [ "$target" = fuzz_control_message ]; then
+              dict="-dict=server/fuzz/control_message.dict"
+            fi
+            "server/build-fuzz/$target" "corpus/$target" "server/fuzz/corpus/$target" $dict \
+              -max_total_time=60 -max_len=20000 -timeout=10 \
+              -artifact_prefix="fuzz-artifacts-$target-" -print_final_stats=1
+            echo "::endgroup::"
+          done
+
+          # The control-message fuzzer is only useful if it reaches the
+          # handlers: require that it kept inputs with recognised types
+          for word in game_ping gain mute codec client_stats; do
+            if ! grep -rqa "\"$word\"" corpus/fuzz_control_message; then
+              echo "::error::fuzz_control_message found no new inputs with a \"$word\" message"; exit 1
+            fi
+          done
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz-artifacts-*
+          retention-days: 14
+
   client:
     name: Client (check + unit tests + build)
     runs-on: ubuntu-24.04

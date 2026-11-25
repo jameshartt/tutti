@@ -77,6 +77,20 @@ TEST(LineFramerTest, OversizedLineIsDroppedAndFramingRecovers) {
     EXPECT_EQ(lines[0], "ok");
 }
 
+TEST(LineFramerTest, SizeLimitDoesNotDependOnFragmentation) {
+    const std::string too_long(17, 'x'), fits(16, 'y');
+    const std::string stream = too_long + "\n" + fits + "\n";
+    const std::vector<std::string> expected{fits};
+
+    LineFramer whole(16);
+    EXPECT_EQ(feed_all(whole, {stream}), expected);
+
+    LineFramer bytewise(16);
+    std::vector<std::string> bytes;
+    for (char c : stream) bytes.emplace_back(1, c);
+    EXPECT_EQ(feed_all(bytewise, bytes), expected);
+}
+
 TEST(LineFramerTest, ResetDropsPartialLine) {
     LineFramer f;
     EXPECT_TRUE(feed_all(f, {"{\"type\":\"half"}).empty());

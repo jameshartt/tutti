@@ -30,6 +30,9 @@ public:
             if (discarding_) {
                 // End of an oversized line: drop it and resume
                 discarding_ = false;
+            } else if (buf_.size() + (i - start) > max_line_) {
+                // Oversized even though it arrived in one piece: drop it, so
+                // the limit does not depend on how the bytes were split
             } else {
                 buf_.append(data + start, i - start);
                 if (!buf_.empty() && buf_.back() == '\r') buf_.pop_back();
@@ -39,8 +42,9 @@ public:
             start = i + 1;
         }
         if (start < len && !discarding_) {
-            buf_.append(data + start, len - start);
-            if (buf_.size() > max_line_) {
+            if (buf_.size() + (len - start) <= max_line_) {
+                buf_.append(data + start, len - start);
+            } else {
                 // A peer that never sends a newline must not grow memory
                 // without bound: drop everything up to the next newline.
                 buf_.clear();

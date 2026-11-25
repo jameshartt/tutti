@@ -40,6 +40,14 @@ public:
     /// Pass the returned callbacks to any TransportServer.
     TransportCallbacks make_callbacks();
 
+    /// Override the per-session `game_*` message limit for sessions bound
+    /// after this call. For tests and fuzzing, which send far faster than
+    /// any real client.
+    void set_game_message_limit(double rate_per_second, double burst) {
+        game_message_rate_ = rate_per_second;
+        game_message_burst_ = burst;
+    }
+
 private:
     /// Called when a new transport session opens (either WebTransport or WebRTC)
     void on_session_open(std::shared_ptr<TransportSession> session);
@@ -61,6 +69,8 @@ private:
     void on_session_close(TransportSession* session);
 
     std::shared_ptr<RoomManager> room_manager_;
+    double game_message_rate_ = kGameMessageRate;
+    double game_message_burst_ = kGameMessageBurst;
 
     /// Tracks which session is bound to which room/participant
     struct BoundSession {
